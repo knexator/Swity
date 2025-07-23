@@ -69,11 +69,11 @@ pub fn applyCases(self: *Swity, bindings: *Bindings, cases: Func.Cases, value: V
                 }
             }
             const argument = self.fillTemplate(bindings, case.template);
+            const result = self.apply(case.function_id, argument);
             if (case.next) |next| {
-                _ = next;
-                @panic("TODO");
+                return self.applyCases(bindings, next, result);
             } else {
-                return self.apply(case.function_id, argument);
+                return result;
             }
         }
     } else unreachable;
@@ -150,6 +150,44 @@ test "one plus one" {
 
     const actual = session.apply("sum", .{ .plex = &.{ one, one } });
     const expected = two;
+
+    try std.testing.expectEqualDeep(expected, actual);
+}
+
+test "three times two" {
+    var session: Swity = .init(std.testing.allocator);
+    defer session.deinit();
+    session.addText(
+        \\ data Natural {
+        \\      "zero",
+        \\      ("succ" Natural),
+        \\ }
+        \\
+        \\ fn sum: (Natural Natural) -> Natural {
+        \\      ("zero" b) -> b;
+        \\      (("succ" a) b) -> sum: (a ("succ" b));
+        \\ }
+        \\
+        \\ fn mul: (Natural Natural) -> Natural {
+        \\     ("zero" b) -> "zero";
+        \\     (("succ" a) b) -> mul: (a b) {
+        \\         x -> sum: (x b);
+        \\     }
+        \\ }
+        \\
+    );
+
+    const succ: Value = .{ .literal = "succ" };
+    const zero: Value = .{ .literal = "zero" };
+    const one: Value = .{ .plex = &.{ succ, zero } };
+    const two: Value = .{ .plex = &.{ succ, one } };
+    const three: Value = .{ .plex = &.{ succ, two } };
+    const four: Value = .{ .plex = &.{ succ, three } };
+    const five: Value = .{ .plex = &.{ succ, four } };
+    const six: Value = .{ .plex = &.{ succ, five } };
+
+    const actual = session.apply("mul", .{ .plex = &.{ three, two } });
+    const expected = six;
 
     try std.testing.expectEqualDeep(expected, actual);
 }
