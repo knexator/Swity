@@ -4,10 +4,11 @@ comptime {
     assert(TypeId == []const u8);
     assert(FuncId == []const u8);
 }
-known_types: std.StringHashMap(Type),
-known_funcs: std.StringHashMap(Func),
+known_types: if (TypeId == []const u8) std.StringHashMap(Type) else std.AutoHashMap(TypeId, Type),
+known_funcs: if (FuncId == []const u8) std.StringHashMap(Func) else std.AutoHashMap(FuncId, Func),
 
 parsing_arena: std.heap.ArenaAllocator,
+per_execution_arena: std.heap.ArenaAllocator,
 
 // TODO: maybe change to pools of Type and Func?
 permanent_arena: std.heap.ArenaAllocator,
@@ -21,6 +22,7 @@ pub fn init(gpa: std.mem.Allocator) Swity {
         .known_funcs = .init(gpa),
         .duplicated_source_arena = .init(gpa),
         .parsing_arena = .init(gpa),
+        .per_execution_arena = .init(gpa),
         .permanent_arena = .init(gpa),
     };
 }
@@ -31,6 +33,7 @@ pub fn deinit(self: *Swity) void {
     self.parsing_arena.deinit();
     self.duplicated_source_arena.deinit();
     self.permanent_arena.deinit();
+    self.per_execution_arena.deinit();
 }
 
 pub fn addText(self: *Swity, text: []const u8) void {
@@ -43,6 +46,112 @@ pub fn addText(self: *Swity, text: []const u8) void {
         .result = self.permanent_arena.allocator(),
     };
     parser.parseAll();
+    _ = self.parsing_arena.reset(.retain_capacity);
+}
+
+// TODO: type checking
+pub fn apply(self: *Swity, func_id: ?FuncId, value: Value) Value {
+    if (func_id == null) return value;
+    const func = self.known_funcs.get(func_id.?).?;
+    var bindings: Bindings = .init(self.per_execution_arena.allocator());
+    // TODO: when to call this?
+    // defer _ = self.per_execution_arena.reset(.retain_capacity);
+    return self.applyCases(&bindings, func.cases, value);
+}
+
+pub fn applyCases(self: *Swity, bindings: *Bindings, cases: Func.Cases, value: Value) Value {
+    for (cases) |case| {
+        if (self.generateBindings(case.pattern, value)) |new_bindings| {
+            {
+                var it = new_bindings.iterator();
+                while (it.next()) |entry| {
+                    bindings.putNoClobber(entry.key_ptr.*, entry.value_ptr.*) catch OoM();
+                }
+            }
+            const argument = self.fillTemplate(bindings, case.template);
+            if (case.next) |next| {
+                _ = next;
+                @panic("TODO");
+            } else {
+                return self.apply(case.function_id, argument);
+            }
+        }
+    } else unreachable;
+}
+
+fn fillTemplate(self: *Swity, bindings: *const Bindings, template: Tree) Value {
+    switch (template) {
+        .literal => |l| return .{ .literal = l },
+        .variable => |v| return bindings.get(v).?,
+        .plex => |p| {
+            const result = self.per_execution_arena.allocator().alloc(Value, p.len) catch OoM();
+            for (result, p) |*dst, t| {
+                dst.* = self.fillTemplate(bindings, t);
+            }
+            return .{ .plex = result };
+        },
+    }
+}
+
+fn generateBindings(self: *Swity, pattern: Tree, value: Value) ?Bindings {
+    const S = struct {
+        fn generateBindingsHelper(cur: *Bindings, pat: Tree, val: Value) bool {
+            switch (pat) {
+                .literal => |pat_l| switch (val) {
+                    else => return false,
+                    .literal => |val_l| return std.mem.eql(u8, pat_l, val_l),
+                },
+                .variable => |v| {
+                    cur.putNoClobber(v, val) catch OoM();
+                    return true;
+                },
+                .plex => |pat_p| switch (val) {
+                    else => return false,
+                    .plex => |val_p| {
+                        if (pat_p.len != val_p.len) return false;
+                        for (pat_p, val_p) |pp, vp| {
+                            if (!generateBindingsHelper(cur, pp, vp)) return false;
+                        } else return true;
+                    },
+                },
+            }
+        }
+    };
+
+    var result: Bindings = .init(self.per_execution_arena.allocator());
+    if (S.generateBindingsHelper(&result, pattern, value)) {
+        return result;
+    } else {
+        // TODO: measure if this .deinit actually does something
+        result.deinit();
+        return null;
+    }
+}
+
+test "one plus one" {
+    var session: Swity = .init(std.testing.allocator);
+    defer session.deinit();
+    session.addText(
+        \\ data Natural {
+        \\      "zero",
+        \\      ("succ" Natural),
+        \\ }
+        \\
+        \\ fn sum: (Natural Natural) -> Natural {
+        \\      ("zero" b) -> b;
+        \\      (("succ" a) b) -> sum: (a ("succ" b));
+        \\ }
+    );
+
+    const succ: Value = .{ .literal = "succ" };
+    const zero: Value = .{ .literal = "zero" };
+    const one: Value = .{ .plex = &.{ succ, zero } };
+    const two: Value = .{ .plex = &.{ succ, one } };
+
+    const actual = session.apply("sum", .{ .plex = &.{ one, one } });
+    const expected = two;
+
+    try std.testing.expectEqualDeep(expected, actual);
 }
 
 const Parser = struct {
@@ -434,6 +543,27 @@ pub const Variable = []const u8;
 pub const Value = union(enum) {
     literal: []const u8,
     plex: []const Value,
+
+    pub fn format(
+        self: Value,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        assert(fmt.len == 0);
+        assert(std.meta.eql(options, .{}));
+        switch (self) {
+            .literal => |l| try writer.print("\"{s}\"", .{l}),
+            .plex => |p| {
+                try writer.writeAll("(");
+                for (p, 0..) |v, k| {
+                    if (k > 0) try writer.writeAll(" ");
+                    try writer.print("{any}", .{v});
+                }
+                try writer.writeAll(")");
+            },
+        }
+    }
 };
 
 pub const Type = union(enum) {
@@ -463,11 +593,7 @@ pub const Func = struct {
     };
 };
 
-pub const Bindings = std.AutoHashMap(Variable, Value);
-
-// pub fn match(tree: Tree, value: Value) ?Bindings {
-//     const bindings : Bindings = .init(gpa)
-// }
+pub const Bindings = if (Variable == []const u8) std.StringHashMap(Value) else std.AutoHashMap(Variable, Value);
 
 fn OoM() noreturn {
     std.debug.panic("OoM", .{});

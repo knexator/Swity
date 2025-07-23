@@ -19,17 +19,29 @@ pub fn main() !void {
         \\      ("succ" Natural),
         \\ }
         \\
-        // \\ fn sum: (Natural Natural) -> Natural {
-        // \\      ("zero" b) -> b;
-        // \\      (("succ" a) b) -> sum: (a ("succ" b));
-        // \\ }
+        \\ fn sum: (Natural Natural) -> Natural {
+        \\      ("zero" b) -> b;
+        \\      (("succ" a) b) -> sum: (a ("succ" b));
+        \\ }
     );
 
-    // const stdout_file = std.io.getStdOut().writer();
-    // var bw = std.io.bufferedWriter(stdout_file);
-    // const stdout = bw.writer();
+    const Value = Swity.Value;
+    const succ: Value = .{ .literal = "succ" };
+    const zero: Value = .{ .literal = "zero" };
+    const one: Value = .{ .plex = &.{ succ, zero } };
+    const two: Value = .{ .plex = &.{ succ, one } };
 
-    // try bw.flush();
+    const actual = session.apply("sum", .{ .plex = &.{ one, one } });
+    const expected = two;
+
+    const stdout_file = std.io.getStdOut().writer();
+    var bw = std.io.bufferedWriter(stdout_file);
+    const stdout = bw.writer();
+
+    try stdout.print("expected: {any}\n", .{expected});
+    try stdout.print("actual: {any}\n", .{actual});
+
+    try bw.flush();
 }
 
 test "simple test" {
