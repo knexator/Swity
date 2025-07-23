@@ -1,0 +1,26 @@
+data Natural {
+    "zero",
+    ("succ" Natural),
+}
+
+fn sum: (Natural Natural) -> Natural {
+    ("zero" b) -> b;
+    (("succ" a) b) -> sum: (a ("succ" b));
+}
+
+fn mul: (Natural Natural) -> Natural {
+    ("zero" b) -> "zero";
+    (("succ" a) b) -> mul: (a b) {
+        x -> sum: (x b);
+    }
+}
+
+// sum: (("succ" "zero") ("succ" "zero")) == ("succ" ("succ" zero))
+
+fn sum: {
+    "foo",
+    (Natural Natural),
+} -> Natural {
+    ("zero" b) -> b;
+    (("succ" a) b) -> sum: (a ("succ" b));
+}
