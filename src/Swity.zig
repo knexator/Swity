@@ -179,7 +179,16 @@ const Parser = struct {
         self.trimLeft();
         const type_out = self.consumeType();
         self.trimLeft();
+        const cases = self.consumeCases();
 
+        return .{
+            .type_in = type_in,
+            .type_out = type_out,
+            .cases = cases,
+        };
+    }
+
+    fn consumeCases(self: *Parser) Func.Cases {
         var inner: std.ArrayList(Func.Case) = .init(self.result);
         self.consume("{");
         self.trimLeft();
@@ -188,11 +197,7 @@ const Parser = struct {
             inner.append(cur) catch OoM();
             self.trimLeft();
         }
-        return .{
-            .type_in = type_in,
-            .type_out = type_out,
-            .cases = inner.toOwnedSlice() catch OoM(),
-        };
+        return inner.toOwnedSlice() catch OoM();
     }
 
     fn consumeCase(self: *Parser) Func.Case {
@@ -223,7 +228,12 @@ const Parser = struct {
                 .next = null,
             };
         } else {
-            @panic("TODO");
+            return .{
+                .pattern = pattern,
+                .function_id = function_id,
+                .template = template,
+                .next = self.consumeCases(),
+            };
         }
     }
 
@@ -361,9 +371,9 @@ const Parser = struct {
         process.addText(
             \\ fn mul: (Natural Natural) -> Natural {
             \\     ("zero" b) -> "zero";
-            \\     // (("succ" a) b) -> mul: (a b) {
-            \\     //     x -> sum: (x b);
-            \\     // }
+            \\     (("succ" a) b) -> mul: (a b) {
+            \\         x -> sum: (x b);
+            \\     }
             \\ }
         );
 
@@ -382,6 +392,31 @@ const Parser = struct {
                     .function_id = null,
                     .template = .{ .literal = "zero" },
                     .next = null,
+                },
+                .{
+                    .pattern = .{ .plex = &.{
+                        .{ .plex = &.{
+                            .{ .literal = "succ" },
+                            .{ .variable = "a" },
+                        } },
+                        .{ .variable = "b" },
+                    } },
+                    .function_id = "mul",
+                    .template = .{ .plex = &.{
+                        .{ .variable = "a" },
+                        .{ .variable = "b" },
+                    } },
+                    .next = &.{
+                        .{
+                            .pattern = .{ .variable = "x" },
+                            .function_id = "sum",
+                            .template = .{ .plex = &.{
+                                .{ .variable = "x" },
+                                .{ .variable = "b" },
+                            } },
+                            .next = null,
+                        },
+                    },
                 },
             },
         };
