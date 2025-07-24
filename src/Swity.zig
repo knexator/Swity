@@ -6,6 +6,10 @@ comptime {
 }
 known_types: if (TypeId == []const u8) std.StringHashMap(Type) else std.AutoHashMap(TypeId, Type),
 known_funcs: if (FuncId == []const u8) std.StringHashMap(Func) else std.AutoHashMap(FuncId, Func),
+main_expression: ?struct {
+    func_id: FuncId,
+    argument: Value,
+} = null,
 
 parsing_arena: std.heap.ArenaAllocator,
 per_execution_arena: std.heap.ArenaAllocator,
@@ -47,6 +51,11 @@ pub fn addText(self: *Swity, text: []const u8) void {
     };
     parser.parseAll();
     _ = self.parsing_arena.reset(.retain_capacity);
+}
+
+pub fn executeMain(self: *Swity) Value {
+    assert(self.main_expression != null);
+    return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
 // TODO: type checking
@@ -192,6 +201,35 @@ test "three times two" {
     try std.testing.expectEqualDeep(expected, actual);
 }
 
+test "main expression" {
+    var session: Swity = .init(std.testing.allocator);
+    defer session.deinit();
+    session.addText(
+        \\ data Natural {
+        \\      "zero",
+        \\      ("succ" Natural),
+        \\ }
+        \\
+        \\ fn sum: (Natural Natural) -> Natural {
+        \\      ("zero" b) -> b;
+        \\      (("succ" a) b) -> sum: (a ("succ" b));
+        \\ }
+        \\
+        \\ main sum: (("succ" "zero") ("succ" "zero"));
+        \\
+    );
+
+    const succ: Value = .{ .literal = "succ" };
+    const zero: Value = .{ .literal = "zero" };
+    const one: Value = .{ .plex = &.{ succ, zero } };
+    const two: Value = .{ .plex = &.{ succ, one } };
+
+    const actual = session.executeMain();
+    const expected = two;
+
+    try std.testing.expectEqualDeep(expected, actual);
+}
+
 const Parser = struct {
     swity: *Swity,
     remaining_text: []const u8,
@@ -201,6 +239,19 @@ const Parser = struct {
     const RawSexpr = union(enum) {
         literal: []const u8,
         plex: []const RawSexpr,
+
+        fn asValue(self: RawSexpr, mem: std.mem.Allocator) Value {
+            switch (self) {
+                .literal => |l| return .{ .literal = maybeLiteral(l).? },
+                .plex => |p| {
+                    const res = mem.alloc(Value, p.len) catch OoM();
+                    for (res, p) |*dst, v| {
+                        dst.* = v.asValue(mem);
+                    }
+                    return .{ .plex = res };
+                },
+            }
+        }
 
         fn asTree(self: RawSexpr, mem: std.mem.Allocator) Tree {
             switch (self) {
@@ -273,7 +324,22 @@ const Parser = struct {
             const result: Func = self.consumeFunc();
             self.swity.known_funcs.putNoClobber(id, result) catch OoM();
             self.parseAll();
-        }
+        } else if (self.maybeConsume("main")) {
+            assert(self.swity.main_expression == null);
+            self.consumeWhitespace();
+            const func_id: FuncId = self.consumeFuncId();
+            self.trimLeft();
+            self.consume(":");
+            self.trimLeft();
+            const argument = self.consumeValue();
+            self.trimLeft();
+            self.consume(";");
+            self.swity.main_expression = .{
+                .func_id = func_id,
+                .argument = argument,
+            };
+            self.parseAll();
+        } else assert(self.remaining_text.len == 0);
     }
 
     fn nextIs(self: *Parser, token: []const u8) bool {
@@ -297,6 +363,11 @@ const Parser = struct {
     fn consumeId(self: *Parser) []const u8 {
         const raw = self.consumeRawSexpr();
         return raw.asId();
+    }
+
+    fn consumeValue(self: *Parser) Value {
+        const raw = self.consumeRawSexpr();
+        return raw.asValue(self.result);
     }
 
     fn consumeType(self: *Parser) Type {

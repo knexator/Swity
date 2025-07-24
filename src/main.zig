@@ -11,44 +11,33 @@ pub fn main() !void {
         assert(debug_allocator.deinit() == .ok);
     };
 
-    var session: Swity = .init(gpa);
-    defer session.deinit();
-    session.addText(
-        \\ data Natural {
-        \\      "zero",
-        \\      ("succ" Natural),
-        \\ }
-        \\
-        \\ fn sum: (Natural Natural) -> Natural {
-        \\      ("zero" b) -> b;
-        \\      (("succ" a) b) -> sum: (a ("succ" b));
-        \\ }
-    );
-
-    const Value = Swity.Value;
-    const succ: Value = .{ .literal = "succ" };
-    const zero: Value = .{ .literal = "zero" };
-    const one: Value = .{ .plex = &.{ succ, zero } };
-    const two: Value = .{ .plex = &.{ succ, one } };
-
-    const actual = session.apply("sum", .{ .plex = &.{ one, one } });
-    const expected = two;
-
     const stdout_file = std.io.getStdOut().writer();
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();
 
-    try stdout.print("expected: {any}\n", .{expected});
-    try stdout.print("actual: {any}\n", .{actual});
+    var args = try std.process.argsWithAllocator(gpa);
+    defer args.deinit();
+    assert(args.skip());
+
+    var got_args = false;
+
+    var session: Swity = .init(gpa);
+    defer session.deinit();
+    while (args.next()) |arg| {
+        got_args = true;
+        const source_code = try std.fs.cwd().readFileAlloc(gpa, arg, std.math.maxInt(usize));
+        defer gpa.free(source_code);
+        session.addText(source_code);
+    }
+
+    if (got_args) {
+        const result = session.executeMain();
+        try stdout.print("{any}", .{result});
+    } else {
+        try stdout.print("Usage: swity [file]", .{});
+    }
 
     try bw.flush();
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
 }
 
 comptime {

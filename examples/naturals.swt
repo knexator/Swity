@@ -15,12 +15,5 @@ fn mul: (Natural Natural) -> Natural {
     }
 }
 
-// sum: (("succ" "zero") ("succ" "zero")) == ("succ" ("succ" zero))
-
-fn sum: {
-    "foo",
-    (Natural Natural),
-} -> Natural {
-    ("zero" b) -> b;
-    (("succ" a) b) -> sum: (a ("succ" b));
-}
+// should output ("succ" ("succ" zero))
+main sum: (("succ" "zero") ("succ" "zero"));
