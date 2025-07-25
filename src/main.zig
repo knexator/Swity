@@ -34,7 +34,7 @@ pub fn main() !void {
         const result = session.executeMain();
         try stdout.print("{any}", .{result});
     } else {
-        try stdout.print("Usage: swity [file]", .{});
+        try stdout.print("Usage: swity [files]", .{});
     }
 
     try bw.flush();

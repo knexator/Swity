@@ -1,0 +1,272 @@
+data Bit {
+    "b0",
+    "b1",
+}
+
+// TODO: general list type? data BinaryNumber [List Bit]
+data BinaryNumber {
+    "nil",
+    (Bit BinaryNumber),
+}
+
+fn binary-inc: BinaryNumber -> BinaryNumber {
+    "nil" -> ("b1" "nil");
+    ("b0" rest) -> ("b1" rest);
+    ("b1" rest) -> binary-inc: rest {
+        new_rest -> ("b0" new_rest);
+    }
+}
+
+fn binary-add: (BinaryNumber BinaryNumber) -> BinaryNumber {
+    ("nil" b) -> b;
+    (a "nil") -> a;
+    (("b0" a_rest) (b_first b_rest)) -> binary-add: (a_rest b_rest) {
+        rest -> (b_first rest);
+    }
+    ((a_first a_rest) ("b0" b_rest)) -> binary-add: (a_rest b_rest) {
+        rest -> (a_first rest);
+    }
+    (("b1" a_rest) ("b1" b_rest)) -> binary-add: (a_rest b_rest) {
+        rest -> binary-inc: rest {
+            actual_rest -> ("b0" actual_rest);
+        }
+    }
+}
+
+fn binary-times-2: BinaryNumber -> BinaryNumber {
+    "nil" -> "nil";
+    x -> ("b0" x);
+}
+
+fn binary-times-10: BinaryNumber -> BinaryNumber {
+    x1 -> binary-times-2: x1 {
+        x2 -> binary-times-2: x2 {
+            x4 -> binary-times-2: x4 {
+                x8 -> binary-add: (x2 x8);
+            }
+        }
+    }
+}
+
+data DecimalDigit {
+    "0", "1", "2", "3", "4",
+    "5", "6", "7", "8", "9",
+}
+
+data DecimalNumber {
+    "nil",
+    (DecimalDigit DecimalNumber),
+}
+
+fn binary-from-decimal: DecimalNumber -> BinaryNumber {
+    "nil" -> "nil";
+    (first rest) -> binary-from-decimal-digit: first {
+        cur -> binary-from-decimal: rest {
+            r1 -> binary-times-10: r1 {
+                r2 -> binary-add: (cur r2);
+            }
+        }
+    }
+}
+
+fn binary-from-decimal-digit: DecimalDigit -> BinaryNumber {
+    "0" -> "nil";
+    "1" -> ("b1" "nil");
+    "2" -> ("b0" ("b1" "nil"));
+    "3" -> ("b1" ("b1" "nil"));
+    "4" -> ("b0" ("b0" ("b1" "nil")));
+    "5" -> ("b1" ("b0" ("b1" "nil")));
+    "6" -> ("b0" ("b1" ("b1" "nil")));
+    "7" -> ("b1" ("b1" ("b1" "nil")));
+    "8" -> ("b0" ("b0" ("b0" ("b1" "nil"))));
+    "9" -> ("b1" ("b0" ("b0" ("b1" "nil"))));
+}
+
+fn decimal-from-binary: BinaryNumber -> DecimalNumber {
+    "nil" -> "nil";
+    (bit rest) -> decimal-from-binary: rest {
+        result -> decimal-duplicate: result {
+            doubled -> bit {
+                "b0" -> doubled;
+                "b1" -> decimal-increment: doubled;
+            }
+        }
+    }
+}
+
+fn decimal-increment: DecimalNumber -> DecimalNumber {
+    "nil" -> ("1" "nil");
+    (digit rest) -> digit {
+        "0" -> ("1" rest);
+        "1" -> ("2" rest);
+        "2" -> ("3" rest);
+        "3" -> ("4" rest);
+        "4" -> ("5" rest);
+        "5" -> ("6" rest);
+        "6" -> ("7" rest);
+        "7" -> ("8" rest);
+        "8" -> ("9" rest);
+        "9" -> decimal-increment: rest {
+            new_rest -> ("0" new_rest);
+        }
+    }
+}
+
+fn decimal-duplicate: DecimalNumber -> DecimalNumber {
+    "nil" -> "nil";
+    (digit rest) -> digit {
+        "0" -> decimal-duplicate: rest {
+            doubled_rest -> ("0" doubled_rest);
+        }
+        "1" -> decimal-duplicate: rest {
+            doubled_rest -> ("2" doubled_rest);
+        }
+        "2" -> decimal-duplicate: rest {
+            doubled_rest -> ("4" doubled_rest);
+        }
+        "3" -> decimal-duplicate: rest {
+            doubled_rest -> ("6" doubled_rest);
+        }
+        "4" -> decimal-duplicate: rest {
+            doubled_rest -> ("8" doubled_rest);
+        }
+        "5" -> decimal-duplicate: rest {
+            doubled_rest -> decimal-increment: doubled_rest {
+                incremented_rest -> ("0" incremented_rest);
+            }
+        }
+        "6" -> decimal-duplicate: rest {
+            doubled_rest -> decimal-increment: doubled_rest {
+                incremented_rest -> ("2" incremented_rest);
+            }
+        }
+        "7" -> decimal-duplicate: rest {
+            doubled_rest -> decimal-increment: doubled_rest {
+                incremented_rest -> ("4" incremented_rest);
+            }
+        }
+        "8" -> decimal-duplicate: rest {
+            doubled_rest -> decimal-increment: doubled_rest {
+                incremented_rest -> ("6" incremented_rest);
+            }
+        }
+        "9" -> decimal-duplicate: rest {
+            doubled_rest -> decimal-increment: doubled_rest {
+                incremented_rest -> ("8" incremented_rest);
+            }
+        }
+    }
+}
+
+data ListOfBinaryNumbers {
+    "nil",
+    (BinaryNumber ListOfBinaryNumbers),
+}
+
+// TODO: better sort
+fn sort-list-of-binary-numbers: ListOfBinaryNumbers -> ListOfBinaryNumbers {
+    "nil" -> "nil";
+    (first rest) -> sort-list-of-binary-numbers: rest {
+        sorted_rest -> _sort-helper: (first sorted_rest);
+    }
+}
+
+fn _sort-helper: (BinaryNumber ListOfBinaryNumbers) -> ListOfBinaryNumbers {
+    (x "nil") -> (x "nil");
+    (x (first rest)) -> binary-compare: (x first) {
+        "first_is_greater" -> _sort-helper: (x rest) {
+            done -> (first done);
+        }
+        other -> (x (first rest));
+    }
+}
+
+fn binary-compare: (BinaryNumber BinaryNumber) -> {
+    "first_is_greater",
+    "equal",
+    "second_is_greater",
+} {
+    ("nil" "nil") -> "equal";
+    ("nil" b) -> "second_is_greater";
+    (a "nil") -> "first_is_greater";
+    ((a_bit a_rest) (b_bit b_rest)) -> binary-compare: (a_rest b_rest) {
+        "equal" -> (a_bit b_bit) {
+            ("b0" "b0") -> "equal";
+            ("b1" "b1") -> "equal";
+            ("b0" "b1") -> "second_is_greater";
+            ("b1" "b0") -> "first_is_greater";
+        }
+        other -> other;
+    }
+}
+
+data Sign {
+    "positive",
+    "negative",
+}
+
+// Helper function to perform subtraction assuming a >= b
+fn binary-subtract-with-nonnegative-result: (BinaryNumber BinaryNumber) -> BinaryNumber {
+    (a "nil") -> a;
+    // ("nil" b) -> unreachable;
+    (("b0" a_rest) ("b0" b_rest)) -> binary-subtract-with-nonnegative-result: (a_rest b_rest) {
+        rest -> binary-normalize: ("b0" rest);
+    }
+    (("b1" a_rest) ("b1" b_rest)) -> binary-subtract-with-nonnegative-result: (a_rest b_rest) {
+        rest -> binary-normalize: ("b0" rest);
+    }
+    (("b1" a_rest) ("b0" b_rest)) -> binary-subtract-with-nonnegative-result: (a_rest b_rest) {
+        rest -> binary-normalize: ("b1" rest);
+    }
+    (("b0" a_rest) ("b1" b_rest)) -> binary-subtract-with-nonnegative-result-helper-borrow: (a_rest b_rest) {
+        rest -> binary-normalize: ("b1" rest);
+    }
+}
+
+fn binary-subtract-with-nonnegative-result-helper-borrow: (BinaryNumber BinaryNumber) -> BinaryNumber {
+    (a "nil") -> binary-dec: a;
+    // ("nil" b) -> unreachable;
+    (("b0" a_rest) ("b0" b_rest)) -> binary-subtract-with-nonnegative-result-helper-borrow: (a_rest b_rest) {
+        rest -> ("b1" rest);
+    }
+    (("b1" a_rest) ("b1" b_rest)) -> binary-subtract-with-nonnegative-result-helper-borrow: (a_rest b_rest) {
+        rest -> ("b1" rest);
+    }
+    (("b1" a_rest) ("b0" b_rest)) -> binary-subtract-with-nonnegative-result: (a_rest b_rest) {
+        rest -> ("b0" rest);
+    }
+    (("b0" a_rest) ("b1" b_rest)) -> binary-subtract-with-nonnegative-result-helper-borrow: (a_rest b_rest) {
+        rest -> ("b0" rest);
+    }
+}
+
+// Helper function to decrement a binary number (opposite of binary-inc)
+fn binary-dec: BinaryNumber -> BinaryNumber {
+    ("b1" rest) -> ("b0" rest);
+    ("b0" rest) -> binary-dec: rest {
+        new_rest -> ("b1" new_rest);
+    }
+}
+
+// Helper function to remove leading zeros
+fn binary-normalize: BinaryNumber -> BinaryNumber {
+    "nil" -> "nil";
+    ("b0" rest) -> binary-normalize: rest {
+        "nil" -> "nil";
+        other -> ("b0" other);
+    }
+    ("b1" rest) -> ("b1" rest);
+}
+
+// Main subtraction function
+fn binary-subtract: (BinaryNumber BinaryNumber) -> (Sign BinaryNumber) {
+    (a b) -> binary-compare: (a b) {
+        "equal" -> ("positive" "nil");
+        "first_is_greater" -> binary-subtract-with-nonnegative-result: (a b) {
+            result -> ("positive" result);
+        }
+        "second_is_greater" -> binary-subtract-with-nonnegative-result: (b a) {
+            result -> ("negative" result);
+        }
+    }
+}

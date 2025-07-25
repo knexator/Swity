@@ -61,7 +61,7 @@ pub fn executeMain(self: *Swity) Value {
 // TODO: type checking
 pub fn apply(self: *Swity, func_id: ?FuncId, value: Value) Value {
     if (func_id == null) return value;
-    const func = self.known_funcs.get(func_id.?).?;
+    const func = self.known_funcs.get(func_id.?) orelse panic("undefined func: {s}", .{func_id.?});
     var bindings: Bindings = .init(self.per_execution_arena.allocator());
     // TODO: when to call this?
     // defer _ = self.per_execution_arena.reset(.retain_capacity);
@@ -354,7 +354,10 @@ const Parser = struct {
     }
 
     fn consume(self: *Parser, token: []const u8) void {
-        assert(self.maybeConsume(token));
+        // assert(self.maybeConsume(token));
+        if (!self.maybeConsume(token)) {
+            panic("expected token {s}, remaining code is {s}", .{ token, self.remaining_text });
+        }
     }
 
     const consumeFuncId = consumeId;
@@ -470,14 +473,14 @@ const Parser = struct {
                 self.remaining_text,
                 1,
                 '"',
-            ) orelse std.debug.panic("unclosed \"", .{});
+            ) orelse panic("unclosed \"", .{});
             while (self.remaining_text[next_index - 1] == '\\') {
                 next_index = std.mem.indexOfScalarPos(
                     u8,
                     self.remaining_text,
                     next_index + 1,
                     '"',
-                ) orelse std.debug.panic("unclosed \"", .{});
+                ) orelse panic("unclosed \"", .{});
             }
             const result: RawSexpr = .{ .literal = self.remaining_text[0 .. next_index + 1] };
             self.remaining_text = self.remaining_text[next_index + 1 ..];
@@ -705,8 +708,9 @@ pub const Func = struct {
 pub const Bindings = if (Variable == []const u8) std.StringHashMap(Value) else std.AutoHashMap(Variable, Value);
 
 fn OoM() noreturn {
-    std.debug.panic("OoM", .{});
+    panic("OoM", .{});
 }
 
 const std = @import("std");
 const assert = std.debug.assert;
+const panic = std.debug.panic;

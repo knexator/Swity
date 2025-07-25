@@ -1,0 +1,55 @@
+// 2024 aoc
+
+// TODO: the optimizer should not keep "diffs" in memory
+fn day1_puzzle1: String -> String {
+    input -> day1_parse: input {
+        (col_1 col_2) -> sort-list-of-binary-numbers: col_1 {
+            sorted_1 -> sort-list-of-binary-numbers: col_2 {
+                sorted_2 -> zip-differences: (sorted_1 sorted_2) {
+                    diffs -> sum-all: diffs {
+                        result -> decimal-from-binary: result;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn zip-differences: (ListOfBinaryNumbers ListOfBinaryNumbers) -> ListOfBinaryNumbers {
+    ("nil" "nil") -> "nil";
+    ((a ra) (b rb)) -> binary-subtract: (a b) {
+        (sign diff) -> zip-differences: (ra rb) {
+            rest -> (diff rest);
+        }
+    }
+}
+
+fn sum-all: ListOfBinaryNumbers -> BinaryNumber {
+    "nil" -> "nil";
+    (a rest) -> sum-all: rest {
+        r -> binary-add: (a r);
+    }
+}
+
+fn day1_parse: String -> (ListOfBinaryNumbers ListOfBinaryNumbers) {
+    "nil" -> ("nil" "nil");
+    (a1 (a2 (a3 (a4 (a5 
+        (" " (" " (" " 
+            (b1 (b2 (b3 (b4 (b5 
+                ("\n" rest)))))))))))))) -> binary-from-decimal: (a5 (a4 (a3 (a2 (a1 "nil"))))) {
+                    a -> binary-from-decimal: (b5 (b4 (b3 (b2 (b1 "nil"))))) {
+                        b -> day1_parse: rest {
+                            (rest_a rest_b) -> ((a rest_a) (b rest_b));
+                        }
+                    }
+                }
+} 
+
+main day1_puzzle1:
+    ("4" ("1" ("2" ("2" ("6" (" " (" " (" " ("6" ("9" ("1" ("9" ("0" ("\n"
+    ("8" ("9" ("3" ("1" ("8" (" " (" " (" " ("1" ("0" ("1" ("0" ("0" ("\n"
+    ("5" ("9" ("4" ("1" ("9" (" " (" " (" " ("2" ("3" ("8" ("8" ("0" ("\n"
+    ("6" ("3" ("1" ("5" ("7" (" " (" " (" " ("2" ("0" ("1" ("9" ("3" ("\n"
+    ("8" ("1" ("5" ("1" ("0" (" " (" " (" " ("2" ("2" ("8" ("6" ("9" ("\n"
+    ("8" ("3" ("9" ("4" ("2" (" " (" " (" " ("6" ("3" ("3" ("0" ("4" ("\n"
+"nil"))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))));

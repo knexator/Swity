@@ -1,0 +1,47 @@
+fn is-decimal-digit: Byte -> Bool {
+    // '0'...'9'
+    "x30" -> "true";
+    "x31" -> "true";
+    "x32" -> "true";
+    "x33" -> "true";
+    "x34" -> "true";
+    "x35" -> "true";
+    "x36" -> "true";
+    "x37" -> "true";
+    "x38" -> "true";
+    "x39" -> "true";
+    other -> "false";
+}
+
+fn char-to-nibble: Byte -> {
+    "InvalidCharacter",
+    Nibble,
+} {
+    // '0'...'9'
+    "x30" -> "x0";
+    "x31" -> "x1";
+    "x32" -> "x2";
+    "x33" -> "x3";
+    "x34" -> "x4";
+    "x35" -> "x5";
+    "x36" -> "x6";
+    "x37" -> "x7";
+    "x38" -> "x8";
+    "x39" -> "x9";
+
+    // 'a'...'f'
+    "x61" -> "xA";
+    "x62" -> "xB";
+    "x63" -> "xC";
+    "x64" -> "xD";
+    "x65" -> "xE";
+    "x66" -> "xF";
+
+    // 'A'...'F'
+    "x41" -> "xA";
+    "x42" -> "xB";
+    "x43" -> "xC";
+    "x44" -> "xD";
+    "x45" -> "xE";
+    "x46" -> "xF";
+}
