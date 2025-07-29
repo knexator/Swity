@@ -384,7 +384,7 @@ const Parser = struct {
                 self.consume(",");
                 self.trimLeft();
             }
-            return .{ .plex = inner.toOwnedSlice() catch OoM() };
+            return .{ .oneof = inner.toOwnedSlice() catch OoM() };
         } else {
             return self.consumeRawSexpr().asType(self.result);
         }
@@ -572,7 +572,7 @@ const Parser = struct {
             \\ }
         );
 
-        const expected: Type = .{ .plex = &.{
+        const expected: Type = .{ .oneof = &.{
             .{ .literal = "zero" },
             .{ .plex = &.{
                 .{ .literal = "succ" },
@@ -681,6 +681,7 @@ pub const Value = union(enum) {
 pub const Type = union(enum) {
     literal: []const u8,
     ref: TypeId,
+    oneof: []const Type,
     plex: []const Type,
 };
 
