@@ -17,23 +17,34 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    const run_cmd = b.addRunArtifact(exe);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+    {
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+        const run_step = b.step("run", "Run the app");
+        run_step.dependOn(&run_cmd.step);
     }
 
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
+    {
+        const exe_unit_tests = b.addTest(.{
+            .root_module = exe_mod,
+        });
+        const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+        const test_step = b.step("test", "Run unit tests");
+        test_step.dependOn(&run_exe_unit_tests.step);
+    }
 
-    const exe_unit_tests = b.addTest(.{
-        .root_module = exe_mod,
-    });
-
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
-
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_exe_unit_tests.step);
+    {
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.step.dependOn(b.getInstallStep());
+        run_cmd.addFileArg(b.path("stdlib/binary.swt"));
+        run_cmd.addFileArg(b.path("examples/advent_of_code.swt"));
+        run_cmd.expectStdOutEqual(
+            \\("6" ("3" ("0" ("9" ("0" ("2" "nil"))))))
+        );
+        const run_step = b.step("e2e", "Run end-to-end tests");
+        run_step.dependOn(&run_cmd.step);
+    }
 }
