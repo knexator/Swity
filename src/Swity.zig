@@ -58,6 +58,28 @@ pub fn executeMain(self: *Swity) Value {
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
+pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
+    if (@"type" == .unresolved) return true;
+    switch (@"type") {
+        // TODO
+        // .unresolved => unreachable,
+        .unresolved => return true,
+        .literal => |l| return value.isTheLiteral(l),
+        .ref => |r| return self.validValueForType(self.known_types.get(r).?, value),
+        .oneof => |options| for (options) |o| {
+            if (self.validValueForType(o, value)) return true;
+        } else return false,
+        .plex => |type_subparts| switch (value) {
+            else => return false,
+            .plex => |value_subparts| {
+                for (type_subparts, value_subparts) |t, v| {
+                    if (!self.validValueForType(t, v)) return false;
+                } else return true;
+            },
+        },
+    }
+}
+
 // TODO: type checking
 pub fn apply(self: *Swity, func_id: ?FuncId, value: Value) Value {
     if (func_id == null) return value;
@@ -65,11 +87,12 @@ pub fn apply(self: *Swity, func_id: ?FuncId, value: Value) Value {
     var bindings: Bindings = .init(self.per_execution_arena.allocator());
     // TODO: when to call this?
     // defer _ = self.per_execution_arena.reset(.retain_capacity);
-    return self.applyCases(&bindings, func.cases, value);
+    return self.applyFunc(&bindings, func, value);
 }
 
-pub fn applyCases(self: *Swity, bindings: *Bindings, cases: Func.Cases, value: Value) Value {
-    for (cases) |case| {
+pub fn applyFunc(self: *Swity, bindings: *Bindings, func: Func, value: Value) Value {
+    assert(self.validValueForType(func.type_in, value));
+    for (func.cases) |case| {
         if (self.generateBindings(case.pattern, value)) |new_bindings| {
             {
                 var it = new_bindings.iterator();
@@ -78,12 +101,14 @@ pub fn applyCases(self: *Swity, bindings: *Bindings, cases: Func.Cases, value: V
                 }
             }
             const argument = self.fillTemplate(bindings, case.template);
-            const result = self.apply(case.function_id, argument);
-            if (case.next) |next| {
-                return self.applyCases(bindings, next, result);
-            } else {
-                return result;
-            }
+            const next_value = self.apply(case.function_id, argument);
+            const result = if (case.next) |next|
+                self.applyFunc(bindings, next, next_value)
+            else
+                next_value;
+
+            assert(self.validValueForType(func.type_out, result));
+            return result;
         }
     } else unreachable;
 }
@@ -106,10 +131,7 @@ fn generateBindings(self: *Swity, pattern: Tree, value: Value) ?Bindings {
     const S = struct {
         fn generateBindingsHelper(cur: *Bindings, pat: Tree, val: Value) bool {
             switch (pat) {
-                .literal => |pat_l| switch (val) {
-                    else => return false,
-                    .literal => |val_l| return std.mem.eql(u8, pat_l, val_l),
-                },
+                .literal => |pat_l| return val.isTheLiteral(pat_l),
                 .variable => |v| {
                     cur.putNoClobber(v, val) catch OoM();
                     return true;
@@ -423,7 +445,7 @@ const Parser = struct {
         };
     }
 
-    fn consumeCases(self: *Parser) Func.Cases {
+    fn consumeCases(self: *Parser) []const Func.Case {
         var inner: std.ArrayList(Func.Case) = .init(self.result);
         self.consume("{");
         self.trimLeft();
@@ -467,7 +489,11 @@ const Parser = struct {
                 .pattern = pattern,
                 .function_id = function_id,
                 .template = template,
-                .next = self.consumeCases(),
+                .next = .{
+                    .cases = self.consumeCases(),
+                    .type_in = .unresolved,
+                    .type_out = .unresolved,
+                },
             };
         }
     }
@@ -681,7 +707,7 @@ const Parser = struct {
                         .{ .variable = "a" },
                         .{ .variable = "b" },
                     } },
-                    .next = &.{
+                    .next = .{ .cases = &.{
                         .{
                             .pattern = .{ .variable = "x" },
                             .function_id = "sum",
@@ -691,7 +717,7 @@ const Parser = struct {
                             } },
                             .next = null,
                         },
-                    },
+                    }, .type_in = .unresolved, .type_out = .unresolved },
                 },
             },
         };
@@ -709,6 +735,13 @@ pub const Variable = []const u8;
 pub const Value = union(enum) {
     literal: []const u8,
     plex: []const Value,
+
+    pub fn isTheLiteral(self: Value, target: []const u8) bool {
+        return switch (self) {
+            else => false,
+            .literal => |l| std.mem.eql(u8, l, target),
+        };
+    }
 
     pub fn format(
         self: Value,
@@ -733,6 +766,7 @@ pub const Value = union(enum) {
 };
 
 pub const Type = union(enum) {
+    unresolved,
     literal: []const u8,
     ref: TypeId,
     oneof: []const Type,
@@ -748,7 +782,7 @@ pub const Tree = union(enum) {
 pub const Func = struct {
     type_in: Type,
     type_out: Type,
-    cases: Cases,
+    cases: []const Case,
 
     pub const Cases = []const Case;
 
@@ -756,7 +790,7 @@ pub const Func = struct {
         pattern: Tree,
         function_id: ?FuncId,
         template: Tree,
-        next: ?Cases,
+        next: ?Func,
     };
 };
 
