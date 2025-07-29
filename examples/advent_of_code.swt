@@ -1,5 +1,25 @@
 // 2024 aoc
 
+data Char {
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    " ",
+    "\n",
+}
+
+data String {
+    "nil",
+    (Char String),
+}
+
 // TODO: the optimizer should not keep "diffs" in memory
 fn day1_puzzle1: String -> String {
     input -> day1_parse: input {
