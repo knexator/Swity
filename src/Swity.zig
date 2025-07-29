@@ -378,15 +378,29 @@ const Parser = struct {
             var inner: std.ArrayList(Type) = .init(self.result);
             self.trimLeft();
             while (!self.maybeConsume("}")) {
-                const cur = self.consumeRawSexpr().asType(self.result);
+                const cur = self.consumeType();
                 inner.append(cur) catch OoM();
                 self.trimLeft();
                 self.consume(",");
                 self.trimLeft();
             }
             return .{ .oneof = inner.toOwnedSlice() catch OoM() };
+        } else if (self.maybeConsume("(")) {
+            var inner: std.ArrayList(Type) = .init(self.result);
+            self.trimLeft();
+            while (!self.maybeConsume(")")) {
+                const cur = self.consumeType();
+                inner.append(cur) catch OoM();
+                self.trimLeft();
+            }
+            return .{ .plex = inner.toOwnedSlice() catch OoM() };
         } else {
-            return self.consumeRawSexpr().asType(self.result);
+            const cur = self.consumeSingleWord();
+            if (cur.is_literal) {
+                return .{ .literal = cur.result };
+            } else {
+                return .{ .ref = cur.result };
+            }
         }
     }
 
@@ -458,6 +472,37 @@ const Parser = struct {
         }
     }
 
+    fn consumeSingleWord(self: *Parser) struct { result: []const u8, is_literal: bool } {
+        if (self.nextIs("\"")) {
+            var next_index = std.mem.indexOfScalarPos(
+                u8,
+                self.remaining_text,
+                1,
+                '"',
+            ) orelse panic("unclosed \"", .{});
+            while (self.remaining_text[next_index - 1] == '\\') {
+                next_index = std.mem.indexOfScalarPos(
+                    u8,
+                    self.remaining_text,
+                    next_index + 1,
+                    '"',
+                ) orelse panic("unclosed \"", .{});
+            }
+            const result = self.remaining_text[1..next_index];
+            self.remaining_text = self.remaining_text[next_index + 1 ..];
+            return .{ .result = result, .is_literal = true };
+        } else {
+            const next_index = std.mem.indexOfAny(
+                u8,
+                self.remaining_text,
+                std.ascii.whitespace ++ "{}():;",
+            ) orelse self.remaining_text.len;
+            const result = self.remaining_text[0..next_index];
+            self.remaining_text = self.remaining_text[next_index..];
+            return .{ .result = result, .is_literal = false };
+        }
+    }
+
     fn consumeRawSexpr(self: *Parser) RawSexpr {
         if (self.maybeConsume("(")) {
             var inner: std.ArrayList(RawSexpr) = .init(self.arena);
@@ -468,6 +513,7 @@ const Parser = struct {
             }
             return .{ .plex = inner.toOwnedSlice() catch OoM() };
         } else if (self.nextIs("\"")) {
+            // TODO NOW: remove
             var next_index = std.mem.indexOfScalarPos(
                 u8,
                 self.remaining_text,
@@ -569,6 +615,7 @@ const Parser = struct {
             \\ data Natural {
             \\      "zero",
             \\      ("succ" Natural),
+            \\      ("error" {"negative", "overflow",}),  
             \\ }
         );
 
@@ -577,6 +624,13 @@ const Parser = struct {
             .{ .plex = &.{
                 .{ .literal = "succ" },
                 .{ .ref = "Natural" },
+            } },
+            .{ .plex = &.{
+                .{ .literal = "error" },
+                .{ .oneof = &.{
+                    .{ .literal = "negative" },
+                    .{ .literal = "overflow" },
+                } },
             } },
         } };
 
