@@ -1,9 +1,5 @@
 const Swity = @This();
 
-comptime {
-    assert(TypeId == []const u8);
-    assert(FuncId == []const u8);
-}
 known_types: if (TypeId == []const u8) std.StringHashMap(Type) else std.AutoHashMap(TypeId, Type),
 known_funcs: if (FuncId == []const u8) std.StringHashMap(Func) else std.AutoHashMap(FuncId, Func),
 main_expression: ?struct {
@@ -58,8 +54,62 @@ pub fn executeMain(self: *Swity) Value {
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
+fn solveTypes(self: *Swity, func: *Func) void {
+    const KnownVariables = if (Variable == []const u8) std.StringHashMap(Type) else std.AutoHashMap(Variable, Type);
+    const S = struct {
+        fn solveTypesInner(swity: Swity, known: KnownVariables, case: *Func.Case, type_in: Type, type_out: Type) void {
+            assert(bindTypes(swity, known, case.pattern, type_in));
+            const type_of_argument: Type = TODO(known, case.template);
+            const type_of_result: Type = if (case.function_id) |func_id| TODO(swity.known_funcs.get(func_id).?, type_of_argument) else type_of_argument;
+            if (case.next) |next| {
+                for (next.cases) |child_case| {
+                    S.solveTypesInner(
+                        self,
+                        known.clone() catch OoM(),
+                        case,
+                        func.type_in,
+                        func.type_out,
+                    );
+                }
+            } else {
+                assert(isSubtype(type_of_result, type_out));
+            }
+        }
+
+        fn bindTypes(swity: Swity, known: KnownVariables, pat: Tree, @"type": Type) bool {
+            switch (pat) {
+                .literal => |pat_l| return swity.validValueForType(@"type", .{ .literal = pat_l }),
+                .variable => |v| {
+                    known.putNoClobber(v, @"type") catch OoM();
+                    return true;
+                },
+                .plex => |pat_p| switch (@"type") {
+                    else => return false,
+                    .plex => |val_p| {
+                        if (pat_p.len != val_p.len) return false;
+                        for (pat_p, val_p) |pp, vp| {
+                            if (!generateBindingsHelper(cur, pp, vp)) return false;
+                        } else return true;
+                    },
+                },
+            }
+        }
+    };
+
+    assert(func.type_in != .unresolved);
+    assert(func.type_out != .unresolved);
+    for (func.cases) |*case| {
+        S.solveTypesInner(
+            self,
+            .init(self.per_execution_arena.allocator()),
+            case,
+            func.type_in,
+            func.type_out,
+        );
+    }
+}
+
 pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
-    if (@"type" == .unresolved) return true;
     switch (@"type") {
         // TODO
         // .unresolved => unreachable,
@@ -771,6 +821,13 @@ pub const Type = union(enum) {
     ref: TypeId,
     oneof: []const Type,
     plex: []const Type,
+
+    fn couldBeLiteral(self: Type, lit: []const u8, other_types: *const KnownTypes) bool {
+        switch (self) {
+            .unresolved => unreachable,
+            // .literal => |l| std.mem.,
+        }
+    }
 };
 
 pub const Tree = union(enum) {
