@@ -32,7 +32,7 @@ pub fn main() !void {
 
     if (got_args) {
         const result = session.executeMain();
-        try stdout.print("{any}", .{result});
+        try stdout.print("{any}\n", .{result});
     } else {
         try stdout.print("Usage: swity [files]", .{});
     }

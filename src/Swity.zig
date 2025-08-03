@@ -51,33 +51,66 @@ pub fn addText(self: *Swity, text: []const u8) void {
 
 pub fn executeMain(self: *Swity) Value {
     assert(self.main_expression != null);
+    var it = self.known_funcs.valueIterator();
+    while (it.next()) |f| self.solveTypes(f);
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
+// TODO: check exhaustive matches
 fn solveTypes(self: *Swity, func: *Func) void {
     const KnownVariables = if (Variable == []const u8) std.StringHashMap(Type) else std.AutoHashMap(Variable, Type);
     const S = struct {
-        fn solveTypesInner(swity: Swity, known: KnownVariables, case: *Func.Case, type_in: Type, type_out: Type) void {
-            assert(bindTypes(swity, known, case.pattern, type_in));
-            const type_of_argument: Type = TODO(known, case.template);
-            const type_of_result: Type = if (case.function_id) |func_id| TODO(swity.known_funcs.get(func_id).?, type_of_argument) else type_of_argument;
+        fn solveTypesInner(swity: *Swity, parent_known: KnownVariables, case: *Func.Case, type_in: Type, type_out: Type) void {
+            var known = parent_known.clone() catch OoM();
+            assert(bindTypes(swity.*, &known, case.pattern, type_in));
+            // std.log.debug("template: {any}", .{case.template});
+            const type_of_argument: Type = findTypeOfArgument(swity.permanent_arena.allocator(), known, case.template);
+            // std.log.debug("type of arg: {any}", .{type_of_argument});
+            const type_of_evaluated_argument: Type = if (case.function_id) |func_id|
+                findTypeOfResult(swity.permanent_arena.allocator(), swity.known_funcs.get(func_id).?, type_of_argument)
+            else
+                type_of_argument;
+            // std.log.debug("type of evaluated arg: {any}", .{type_of_evaluated_argument});
             if (case.next) |next| {
-                for (next.cases) |child_case| {
-                    S.solveTypesInner(
-                        self,
-                        known.clone() catch OoM(),
-                        case,
-                        func.type_in,
-                        func.type_out,
+                for (next.cases) |*child_case| {
+                    solveTypesInner(
+                        swity,
+                        known,
+                        child_case,
+                        type_of_evaluated_argument,
+                        type_out,
                     );
                 }
             } else {
-                assert(isSubtype(type_of_result, type_out));
+                assert(isSubtype(swity.*, type_of_evaluated_argument, type_out));
             }
         }
 
-        fn bindTypes(swity: Swity, known: KnownVariables, pat: Tree, @"type": Type) bool {
-            switch (pat) {
+        // TODO: return a more specific type
+        fn findTypeOfResult(arena: std.mem.Allocator, func_: Func, argument_type: Type) Type {
+            _ = arena;
+            _ = argument_type;
+            return func_.type_out;
+        }
+
+        // TODO: memory management
+        fn findTypeOfArgument(arena: std.mem.Allocator, known: KnownVariables, template: Tree) Type {
+            switch (template) {
+                .literal => |l| return .{ .literal = l },
+                .variable => |v| return known.get(v).?,
+                .plex => |p| {
+                    const result = arena.alloc(Type, p.len) catch OoM();
+                    for (result, p) |*dst, t| {
+                        dst.* = findTypeOfArgument(arena, known, t);
+                    }
+                    return .{ .plex = result };
+                },
+            }
+        }
+
+        fn bindTypes(swity: Swity, known: *KnownVariables, pattern: Tree, @"type": Type) bool {
+            // std.log.debug("bindTypes for pattern {any} and type {any}", .{ pattern, @"type" });
+            switch (pattern) {
                 .literal => |pat_l| return swity.validValueForType(@"type", .{ .literal = pat_l }),
                 .variable => |v| {
                     known.putNoClobber(v, @"type") catch OoM();
@@ -85,10 +118,73 @@ fn solveTypes(self: *Swity, func: *Func) void {
                 },
                 .plex => |pat_p| switch (@"type") {
                     else => return false,
+                    .ref => |r| return bindTypes(swity, known, pattern, swity.known_types.get(r).?),
+                    .oneof => |options| {
+                        for (options) |o| {
+                            var new_known = known.clone() catch OoM();
+                            if (bindTypes(swity, &new_known, pattern, o)) {
+                                known.* = new_known;
+                                return true;
+                            } else {
+                                new_known.deinit();
+                            }
+                        } else return false;
+                    },
                     .plex => |val_p| {
                         if (pat_p.len != val_p.len) return false;
                         for (pat_p, val_p) |pp, vp| {
-                            if (!generateBindingsHelper(cur, pp, vp)) return false;
+                            if (!bindTypes(swity, known, pp, vp)) return false;
+                        } else return true;
+                    },
+                },
+            }
+        }
+
+        fn isSubtype(swity: Swity, specific: Type, general: Type) bool {
+            // std.log.debug("checking isSubtype, specific {any} of general {any}", .{ specific, general });
+            switch (specific) {
+                .unresolved => unreachable,
+                .literal => |l_specific| switch (general) {
+                    .unresolved => unreachable,
+                    .literal => |l_general| return std.mem.eql(u8, l_specific, l_general),
+                    .plex => return false,
+                    .ref => |r| return isSubtype(swity, specific, swity.known_types.get(r).?),
+                    .oneof => |options| for (options) |o| {
+                        if (isSubtype(swity, specific, o)) return true;
+                    } else return false,
+                },
+                .ref => |r| switch (general) {
+                    else => return isSubtype(swity, swity.known_types.get(r).?, general),
+                    // a bit ad-hoc
+                    .oneof => |gos| for (gos) |o| {
+                        if (isSubtype(swity, specific, o)) return true;
+                    } else return false,
+                    .ref => |rg| if (std.mem.eql(u8, r, rg))
+                        return true
+                    else {
+                        // TODO:
+                        // data Foo {"x", ("cons" Foo)}
+                        // data Bar {"x", "y", ("cons" Bar)}
+                        // isSubtype(Foo, Bar) should be true
+                        // return isSubtype(swity, swity.known_types.get(r).?, swity.known_types.get(rg).?);
+                        return isSubtype(swity, specific, swity.known_types.get(rg).?);
+                        // return isSubtype(swity, swity.known_types.get(r).?, general);
+                    },
+                },
+                .oneof => |options| for (options) |o| {
+                    if (!isSubtype(swity, o, general)) return false;
+                } else return true,
+                .plex => |specific_parts| switch (general) {
+                    .unresolved => unreachable,
+                    .literal => return false,
+                    .ref => |r| return isSubtype(swity, specific, swity.known_types.get(r).?),
+                    .oneof => |options| for (options) |o| {
+                        if (isSubtype(swity, specific, o)) return true;
+                    } else return false,
+                    .plex => |general_parts| {
+                        if (specific_parts.len != general_parts.len) return false;
+                        for (specific_parts, general_parts) |s, g| {
+                            if (!isSubtype(swity, s, g)) return false;
                         } else return true;
                     },
                 },
@@ -98,7 +194,10 @@ fn solveTypes(self: *Swity, func: *Func) void {
 
     assert(func.type_in != .unresolved);
     assert(func.type_out != .unresolved);
+    // std.log.debug("func type in {any}", .{func.type_in});
+    // std.log.debug("func type out {any}", .{func.type_out});
     for (func.cases) |*case| {
+        // std.log.debug("solving inner types for case {any}", .{case.*});
         S.solveTypesInner(
             self,
             .init(self.per_execution_arena.allocator()),
@@ -495,7 +594,7 @@ const Parser = struct {
         };
     }
 
-    fn consumeCases(self: *Parser) []const Func.Case {
+    fn consumeCases(self: *Parser) []Func.Case {
         var inner: std.ArrayList(Func.Case) = .init(self.result);
         self.consume("{");
         self.trimLeft();
@@ -571,7 +670,7 @@ const Parser = struct {
             const next_index = std.mem.indexOfAny(
                 u8,
                 self.remaining_text,
-                std.ascii.whitespace ++ "{}():;",
+                std.ascii.whitespace ++ "{}():;,",
             ) orelse self.remaining_text.len;
             const result = self.remaining_text[0..next_index];
             self.remaining_text = self.remaining_text[next_index..];
@@ -734,7 +833,7 @@ const Parser = struct {
                 .{ .ref = "Natural" },
             } },
             .type_out = .{ .ref = "Natural" },
-            .cases = &.{
+            .cases = @constCast(&[2]Func.Case{
                 .{
                     .pattern = .{ .plex = &.{
                         .{ .literal = "zero" },
@@ -757,7 +856,7 @@ const Parser = struct {
                         .{ .variable = "a" },
                         .{ .variable = "b" },
                     } },
-                    .next = .{ .cases = &.{
+                    .next = .{ .cases = @constCast(&[1]Func.Case{
                         .{
                             .pattern = .{ .variable = "x" },
                             .function_id = "sum",
@@ -767,9 +866,9 @@ const Parser = struct {
                             } },
                             .next = null,
                         },
-                    }, .type_in = .unresolved, .type_out = .unresolved },
+                    }), .type_in = .unresolved, .type_out = .unresolved },
                 },
-            },
+            }),
         };
 
         const actual = process.known_funcs.get("mul") orelse return error.TestUnexpectedResult;
@@ -822,10 +921,35 @@ pub const Type = union(enum) {
     oneof: []const Type,
     plex: []const Type,
 
-    fn couldBeLiteral(self: Type, lit: []const u8, other_types: *const KnownTypes) bool {
+    pub fn format(
+        self: @This(),
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        assert(fmt.len == 0);
+        assert(std.meta.eql(options, .{}));
         switch (self) {
-            .unresolved => unreachable,
-            // .literal => |l| std.mem.,
+            .unresolved => try writer.writeAll("UNRESOLVED"),
+            .literal => |l| try writer.print("\"{s}\"", .{l}),
+            .ref => |r| try writer.writeAll(r),
+            .oneof => |os| {
+                try writer.writeAll("{\n");
+                for (os) |o| {
+                    try writer.writeAll("\t");
+                    try o.format(fmt, options, writer);
+                    try writer.writeAll(",\n");
+                }
+                try writer.writeAll("}");
+            },
+            .plex => |ps| {
+                try writer.writeAll("(");
+                for (ps) |p| {
+                    try p.format(fmt, options, writer);
+                    try writer.writeAll(" ");
+                }
+                try writer.writeAll(")");
+            },
         }
     }
 };
@@ -834,14 +958,34 @@ pub const Tree = union(enum) {
     literal: []const u8,
     variable: Variable,
     plex: []const Tree,
+
+    pub fn format(
+        self: @This(),
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        assert(fmt.len == 0);
+        assert(std.meta.eql(options, .{}));
+        switch (self) {
+            .literal => |l| try writer.print("\"{s}\"", .{l}),
+            .variable => |v| try writer.writeAll(v),
+            .plex => |ps| {
+                try writer.writeAll("(");
+                for (ps) |p| {
+                    try p.format(fmt, options, writer);
+                    try writer.writeAll(" ");
+                }
+                try writer.writeAll(")");
+            },
+        }
+    }
 };
 
 pub const Func = struct {
     type_in: Type,
     type_out: Type,
-    cases: []const Case,
-
-    pub const Cases = []const Case;
+    cases: []Case,
 
     pub const Case = struct {
         pattern: Tree,
