@@ -83,7 +83,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     );
                 }
             } else {
-                assert(isSubtype(swity.known_types, type_of_evaluated_argument, type_out));
+                assert(isSubtype(swity.per_execution_arena.allocator(), swity.known_types, type_of_evaluated_argument, type_out));
             }
         }
 
@@ -141,7 +141,49 @@ fn solveTypes(self: *Swity, func: *Func) void {
             }
         }
 
-        fn isSubtype(known_types: KnownTypes, specific: Type, general: Type) bool {
+        test "subtype" {
+            var process: Swity = .init(std.testing.allocator);
+            defer process.deinit();
+
+            process.addText(
+                \\ data ListOfA {
+                \\      "nil",
+                \\      ("A" ListOfA),  
+                \\ }
+                \\ data ListOfAB {
+                \\      "nil",
+                \\      ("A" ListOfAB),
+                \\      ("B" ListOfAB),
+                \\ }
+            );
+
+            try std.testing.expect(isSubtype(std.testing.allocator, process.known_types, .{ .ref = "ListOfA" }, .{ .ref = "ListOfAB" }));
+        }
+
+        fn isSubtype(scratch: std.mem.Allocator, known_types: KnownTypes, specific: Type, general: Type) bool {
+            var assumptions: @typeInfo(@typeInfo(@TypeOf(isSubtypeHelper)).@"fn".params[1].type.?).pointer.child = .init(scratch);
+            defer assumptions.deinit();
+            return isSubtypeHelper(known_types, &assumptions, specific, general);
+        }
+
+        const Assumption = struct { child: TypeId, parent: TypeId };
+        fn isSubtypeHelper(known_types: KnownTypes, assumptions: *std.HashMap(
+            Assumption,
+            void,
+            struct {
+                pub fn hash(_: @This(), k: Assumption) u64 {
+                    var wyhash: std.hash.Wyhash = .init(0);
+                    wyhash.update(k.child);
+                    wyhash.update(k.parent);
+                    return wyhash.final();
+                }
+
+                pub fn eql(_: @This(), k1: Assumption, k2: Assumption) bool {
+                    return std.mem.eql(u8, k1.child, k2.child) and std.mem.eql(u8, k1.parent, k2.parent);
+                }
+            },
+            std.hash_map.default_max_load_percentage,
+        ), specific: Type, general: Type) bool {
             // std.log.debug("checking isSubtype, specific {any} of general {any}", .{ specific, general });
             switch (specific) {
                 .unresolved => unreachable,
@@ -149,43 +191,38 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     .unresolved => unreachable,
                     .literal => |l_general| return std.mem.eql(u8, l_specific, l_general),
                     .plex => return false,
-                    .ref => |r| return isSubtype(known_types, specific, known_types.get(r).?),
+                    .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?),
                     .oneof => |options| for (options) |o| {
-                        if (isSubtype(known_types, specific, o)) return true;
+                        if (isSubtypeHelper(known_types, assumptions, specific, o)) return true;
                     } else return false,
                 },
                 .ref => |r| switch (general) {
-                    else => return isSubtype(known_types, known_types.get(r).?, general),
-                    // a bit ad-hoc
-                    .oneof => |gos| for (gos) |o| {
-                        if (isSubtype(known_types, specific, o)) return true;
-                    } else return false,
-                    .ref => |rg| if (std.mem.eql(u8, r, rg))
-                        return true
-                    else {
-                        // TODO:
-                        // data Foo {"x", ("cons" Foo)}
-                        // data Bar {"x", "y", ("cons" Bar)}
-                        // isSubtype(Foo, Bar) should be true
-                        // return isSubtype(swity, swity.known_types.get(r).?, swity.known_types.get(rg).?);
-                        return isSubtype(known_types, specific, known_types.get(rg).?);
-                        // return isSubtype(swity, swity.known_types.get(r).?, general);
+                    else => return isSubtypeHelper(known_types, assumptions, known_types.get(r).?, general),
+                    .ref => |rg| {
+                        if (std.mem.eql(u8, r, rg))
+                            return true
+                        else {
+                            if (assumptions.get(.{ .child = r, .parent = rg }) == null) {
+                                assumptions.put(.{ .child = r, .parent = rg }, {}) catch OoM();
+                                return isSubtypeHelper(known_types, assumptions, specific, known_types.get(rg).?);
+                            } else return true;
+                        }
                     },
                 },
                 .oneof => |options| for (options) |o| {
-                    if (!isSubtype(known_types, o, general)) return false;
+                    if (!isSubtypeHelper(known_types, assumptions, o, general)) return false;
                 } else return true,
                 .plex => |specific_parts| switch (general) {
                     .unresolved => unreachable,
                     .literal => return false,
-                    .ref => |r| return isSubtype(known_types, specific, known_types.get(r).?),
+                    .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?),
                     .oneof => |options| for (options) |o| {
-                        if (isSubtype(known_types, specific, o)) return true;
+                        if (isSubtypeHelper(known_types, assumptions, specific, o)) return true;
                     } else return false,
                     .plex => |general_parts| {
                         if (specific_parts.len != general_parts.len) return false;
                         for (specific_parts, general_parts) |s, g| {
-                            if (!isSubtype(known_types, s, g)) return false;
+                            if (!isSubtypeHelper(known_types, assumptions, s, g)) return false;
                         } else return true;
                     },
                 },

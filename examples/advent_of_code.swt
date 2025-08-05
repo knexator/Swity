@@ -9,8 +9,6 @@ data Char {
 data String {
     "nil",
     (Char String),
-    // TODO: remove once it's autodetected
-    DecimalNumber,
 }
 
 // TODO: the optimizer should not keep "diffs" in memory
