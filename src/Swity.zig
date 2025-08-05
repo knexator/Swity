@@ -1,6 +1,7 @@
 const Swity = @This();
 
-known_types: if (TypeId == []const u8) std.StringHashMap(Type) else std.AutoHashMap(TypeId, Type),
+const KnownTypes = if (TypeId == []const u8) std.StringHashMap(Type) else std.AutoHashMap(TypeId, Type);
+known_types: KnownTypes,
 known_funcs: if (FuncId == []const u8) std.StringHashMap(Func) else std.AutoHashMap(FuncId, Func),
 main_expression: ?struct {
     func_id: FuncId,
@@ -82,7 +83,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     );
                 }
             } else {
-                assert(isSubtype(swity.*, type_of_evaluated_argument, type_out));
+                assert(isSubtype(swity.known_types, type_of_evaluated_argument, type_out));
             }
         }
 
@@ -140,7 +141,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
             }
         }
 
-        fn isSubtype(swity: Swity, specific: Type, general: Type) bool {
+        fn isSubtype(known_types: KnownTypes, specific: Type, general: Type) bool {
             // std.log.debug("checking isSubtype, specific {any} of general {any}", .{ specific, general });
             switch (specific) {
                 .unresolved => unreachable,
@@ -148,16 +149,16 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     .unresolved => unreachable,
                     .literal => |l_general| return std.mem.eql(u8, l_specific, l_general),
                     .plex => return false,
-                    .ref => |r| return isSubtype(swity, specific, swity.known_types.get(r).?),
+                    .ref => |r| return isSubtype(known_types, specific, known_types.get(r).?),
                     .oneof => |options| for (options) |o| {
-                        if (isSubtype(swity, specific, o)) return true;
+                        if (isSubtype(known_types, specific, o)) return true;
                     } else return false,
                 },
                 .ref => |r| switch (general) {
-                    else => return isSubtype(swity, swity.known_types.get(r).?, general),
+                    else => return isSubtype(known_types, known_types.get(r).?, general),
                     // a bit ad-hoc
                     .oneof => |gos| for (gos) |o| {
-                        if (isSubtype(swity, specific, o)) return true;
+                        if (isSubtype(known_types, specific, o)) return true;
                     } else return false,
                     .ref => |rg| if (std.mem.eql(u8, r, rg))
                         return true
@@ -167,24 +168,24 @@ fn solveTypes(self: *Swity, func: *Func) void {
                         // data Bar {"x", "y", ("cons" Bar)}
                         // isSubtype(Foo, Bar) should be true
                         // return isSubtype(swity, swity.known_types.get(r).?, swity.known_types.get(rg).?);
-                        return isSubtype(swity, specific, swity.known_types.get(rg).?);
+                        return isSubtype(known_types, specific, known_types.get(rg).?);
                         // return isSubtype(swity, swity.known_types.get(r).?, general);
                     },
                 },
                 .oneof => |options| for (options) |o| {
-                    if (!isSubtype(swity, o, general)) return false;
+                    if (!isSubtype(known_types, o, general)) return false;
                 } else return true,
                 .plex => |specific_parts| switch (general) {
                     .unresolved => unreachable,
                     .literal => return false,
-                    .ref => |r| return isSubtype(swity, specific, swity.known_types.get(r).?),
+                    .ref => |r| return isSubtype(known_types, specific, known_types.get(r).?),
                     .oneof => |options| for (options) |o| {
-                        if (isSubtype(swity, specific, o)) return true;
+                        if (isSubtype(known_types, specific, o)) return true;
                     } else return false,
                     .plex => |general_parts| {
                         if (specific_parts.len != general_parts.len) return false;
                         for (specific_parts, general_parts) |s, g| {
-                            if (!isSubtype(swity, s, g)) return false;
+                            if (!isSubtype(known_types, s, g)) return false;
                         } else return true;
                     },
                 },
