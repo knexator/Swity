@@ -52,8 +52,14 @@ pub fn addText(self: *Swity, text: []const u8) void {
 
 pub fn executeMain(self: *Swity) Value {
     assert(self.main_expression != null);
-    var it = self.known_funcs.valueIterator();
-    while (it.next()) |f| self.solveTypes(f);
+    {
+        var it = self.known_funcs.valueIterator();
+        while (it.next()) |f| self.solveTypes(f);
+    }
+    if (false) {
+        var it = self.known_funcs.iterator();
+        while (it.next()) |kv| std.log.debug("{s}: {any}", .{ kv.key_ptr.*, kv.value_ptr.* });
+    }
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
@@ -61,6 +67,25 @@ pub fn executeMain(self: *Swity) Value {
 fn solveTypes(self: *Swity, func: *Func) void {
     const KnownVariables = if (Variable == []const u8) std.StringHashMap(Type) else std.AutoHashMap(Variable, Type);
     const S = struct {
+        test "typing" {
+            if (true) return error.SkipZigTest;
+            var process: Swity = .init(std.testing.allocator);
+            defer process.deinit();
+
+            process.addText(
+                \\ data Foo ( "A" "B" )
+                \\
+                \\ fn Bar: Foo -> Foo {
+                \\     (x y) -> x {
+                \\          "A" -> "B";
+                \\     }
+                \\ }
+                \\
+            );
+
+            try std.testing.expect(isSubtype(std.testing.allocator, process.known_types, .{ .ref = "ListOfA" }, .{ .ref = "ListOfAB" }));
+        }
+
         fn solveTypesInner(swity: *Swity, parent_known: KnownVariables, case: *Func.Case, type_in: Type, type_out: Type) void {
             var known = parent_known.clone() catch OoM();
             assert(bindTypes(swity.*, &known, case.pattern, type_in));
@@ -235,7 +260,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
     // std.log.debug("func type in {any}", .{func.type_in});
     // std.log.debug("func type out {any}", .{func.type_out});
     for (func.cases) |*case| {
-        // std.log.debug("solving inner types for case {any}", .{case.*});
+        std.log.debug("solving inner types for case {any}", .{case.*});
         S.solveTypesInner(
             self,
             .init(self.per_execution_arena.allocator()),
@@ -243,6 +268,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
             func.type_in,
             func.type_out,
         );
+        std.log.debug("after solve: {any}", .{case.*});
     }
 }
 
@@ -278,7 +304,10 @@ pub fn apply(self: *Swity, func_id: ?FuncId, value: Value) Value {
 }
 
 pub fn applyFunc(self: *Swity, bindings: *Bindings, func: Func, value: Value) Value {
-    assert(self.validValueForType(func.type_in, value));
+    if (!self.validValueForType(func.type_in, value)) {
+        std.log.err("invalid value {any} for type {any} while checking func cases {any}", .{ value, func.type_in, func.cases });
+        unreachable;
+    }
     for (func.cases) |case| {
         if (self.generateBindings(case.pattern, value)) |new_bindings| {
             {
@@ -297,7 +326,10 @@ pub fn applyFunc(self: *Swity, bindings: *Bindings, func: Func, value: Value) Va
             assert(self.validValueForType(func.type_out, result));
             return result;
         }
-    } else unreachable;
+    } else {
+        std.log.err("Ran out of cases for value {any}, and cases {any}", .{ value, func.cases });
+        unreachable;
+    }
 }
 
 fn fillTemplate(self: *Swity, bindings: *const Bindings, template: Tree) Value {
@@ -363,10 +395,10 @@ test "one plus one" {
 
     const succ: Value = .{ .literal = "succ" };
     const zero: Value = .{ .literal = "zero" };
-    const one: Value = .{ .plex = &.{ succ, zero } };
-    const two: Value = .{ .plex = &.{ succ, one } };
+    const one: Value = .{ .plex = @constCast(&[2]Value{ succ, zero }) };
+    const two: Value = .{ .plex = @constCast(&[2]Value{ succ, one }) };
 
-    const actual = session.apply("sum", .{ .plex = &.{ one, one } });
+    const actual = session.apply("sum", .{ .plex = @constCast(&[2]Value{ one, one }) });
     const expected = two;
 
     try std.testing.expectEqualDeep(expected, actual);
@@ -397,14 +429,14 @@ test "three times two" {
 
     const succ: Value = .{ .literal = "succ" };
     const zero: Value = .{ .literal = "zero" };
-    const one: Value = .{ .plex = &.{ succ, zero } };
-    const two: Value = .{ .plex = &.{ succ, one } };
-    const three: Value = .{ .plex = &.{ succ, two } };
-    const four: Value = .{ .plex = &.{ succ, three } };
-    const five: Value = .{ .plex = &.{ succ, four } };
-    const six: Value = .{ .plex = &.{ succ, five } };
+    const one: Value = .{ .plex = @constCast(&[2]Value{ succ, zero }) };
+    const two: Value = .{ .plex = @constCast(&[2]Value{ succ, one }) };
+    const three: Value = .{ .plex = @constCast(&[2]Value{ succ, two }) };
+    const four: Value = .{ .plex = @constCast(&[2]Value{ succ, three }) };
+    const five: Value = .{ .plex = @constCast(&[2]Value{ succ, four }) };
+    const six: Value = .{ .plex = @constCast(&[2]Value{ succ, five }) };
 
-    const actual = session.apply("mul", .{ .plex = &.{ three, two } });
+    const actual = session.apply("mul", .{ .plex = @constCast(&[2]Value{ three, two }) });
     const expected = six;
 
     try std.testing.expectEqualDeep(expected, actual);
@@ -430,8 +462,8 @@ test "main expression" {
 
     const succ: Value = .{ .literal = "succ" };
     const zero: Value = .{ .literal = "zero" };
-    const one: Value = .{ .plex = &.{ succ, zero } };
-    const two: Value = .{ .plex = &.{ succ, one } };
+    const one: Value = .{ .plex = @constCast(&[2]Value{ succ, zero }) };
+    const two: Value = .{ .plex = @constCast(&[2]Value{ succ, one }) };
 
     const actual = session.executeMain();
     const expected = two;
@@ -548,7 +580,12 @@ const Parser = struct {
                 .argument = argument,
             };
             self.parseAll();
-        } else assert(self.remaining_text.len == 0);
+        } else {
+            if (self.remaining_text.len > 0) {
+                std.log.err("unexpected final text: {s}", .{self.remaining_text});
+                unreachable;
+            }
+        }
     }
 
     fn nextIs(self: *Parser, token: []const u8) bool {
@@ -578,8 +615,33 @@ const Parser = struct {
     }
 
     fn consumeValue(self: *Parser) Value {
-        const raw = self.consumeRawSexpr();
-        return raw.asValue(self.result);
+        if (self.maybeConsume("<<EOF")) {
+            _ = self.maybeConsume("\r");
+            self.consume("\n");
+            var result: Value = .{ .literal = "nil" };
+            var tail: *Value = &result;
+            while (true) {
+                if (self.maybeConsume("EOF")) {
+                    return result;
+                } else {
+                    // hacky
+                    const next_char = if (self.nextIs("\r\n")) blk: {
+                        self.consume("\r");
+                        break :blk "\\n";
+                    } else self.remaining_text[0..1];
+
+                    tail.* = .{ .plex = self.result.dupe(Value, &.{
+                        .{ .literal = next_char },
+                        tail.*,
+                    }) catch OoM() };
+                    tail = &tail.plex[1];
+                    self.remaining_text = self.remaining_text[1..];
+                }
+            }
+        } else {
+            const raw = self.consumeRawSexpr();
+            return raw.asValue(self.result);
+        }
     }
 
     fn consumeType(self: *Parser) Type {
@@ -921,7 +983,8 @@ pub const Variable = []const u8;
 
 pub const Value = union(enum) {
     literal: []const u8,
-    plex: []const Value,
+    // TODO: make this const?
+    plex: []Value,
 
     pub fn isTheLiteral(self: Value, target: []const u8) bool {
         return switch (self) {
@@ -1030,7 +1093,44 @@ pub const Func = struct {
         function_id: ?FuncId,
         template: Tree,
         next: ?Func,
+
+        pub fn format(
+            self: Case,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: std.io.AnyWriter,
+            // writer: anytype,
+        ) !void {
+            std.debug.assert(std.mem.eql(u8, fmt, ""));
+            std.debug.assert(std.meta.eql(options, .{}));
+            if (self.function_id) |func_id| {
+                try writer.print("{any} -> {s}: {any}", .{ self.pattern, func_id, self.template });
+            } else {
+                try writer.print("{any} -> {any}", .{ self.pattern, self.template });
+            }
+            if (self.next) |next| {
+                try writer.print(" {any}", .{next});
+            } else {
+                try writer.writeAll(";");
+            }
+        }
     };
+
+    pub fn format(
+        self: Func,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: std.io.AnyWriter,
+    ) !void {
+        std.debug.assert(std.mem.eql(u8, fmt, ""));
+        std.debug.assert(std.meta.eql(options, .{}));
+        try writer.print("{any} -> {any} ", .{ self.type_in, self.type_out });
+        try writer.writeAll("{\n");
+        for (self.cases) |case| {
+            try writer.print("{any}\n", .{case});
+        }
+        try writer.writeAll("}");
+    }
 };
 
 pub const Bindings = if (Variable == []const u8) std.StringHashMap(Value) else std.AutoHashMap(Variable, Value);
