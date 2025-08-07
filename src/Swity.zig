@@ -52,6 +52,11 @@ pub fn addText(self: *Swity, text: []const u8) void {
 
 pub fn executeMain(self: *Swity) Value {
     assert(self.main_expression != null);
+    self.solveAllTypes();
+    return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
+}
+
+pub fn solveAllTypes(self: *Swity) void {
     {
         var it = self.known_funcs.valueIterator();
         while (it.next()) |f| self.solveTypes(f);
@@ -60,7 +65,6 @@ pub fn executeMain(self: *Swity) Value {
         var it = self.known_funcs.iterator();
         while (it.next()) |kv| std.log.debug("{s}: {any}", .{ kv.key_ptr.*, kv.value_ptr.* });
     }
-    return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
 // TODO: check exhaustive matches
@@ -68,14 +72,13 @@ fn solveTypes(self: *Swity, func: *Func) void {
     const KnownVariables = if (Variable == []const u8) std.StringHashMap(Type) else std.AutoHashMap(Variable, Type);
     const S = struct {
         test "typing" {
-            if (true) return error.SkipZigTest;
             var process: Swity = .init(std.testing.allocator);
             defer process.deinit();
 
             process.addText(
                 \\ data Foo ( "A" "B" )
                 \\
-                \\ fn Bar: Foo -> Foo {
+                \\ fn Bar: Foo -> "B" {
                 \\     (x y) -> x {
                 \\          "A" -> "B";
                 \\     }
@@ -83,10 +86,17 @@ fn solveTypes(self: *Swity, func: *Func) void {
                 \\
             );
 
-            try std.testing.expect(isSubtype(std.testing.allocator, process.known_types, .{ .ref = "ListOfA" }, .{ .ref = "ListOfAB" }));
+            process.solveAllTypes();
+
+            const bar_func = process.known_funcs.get("Bar").?;
+            const bar_inner_func = bar_func.cases[0].next.?;
+
+            try std.testing.expectEqualDeep(bar_func.type_in, Type{ .ref = "Foo" });
+            try std.testing.expectEqualDeep(bar_inner_func.type_in, Type{ .literal = "A" });
         }
 
         fn solveTypesInner(swity: *Swity, parent_known: KnownVariables, case: *Func.Case, type_in: Type, type_out: Type) void {
+            // std.log.err("solving types inner for case {any} with type in {any}", .{ case, type_in });
             var known = parent_known.clone() catch OoM();
             assert(bindTypes(swity.*, &known, case.pattern, type_in));
             // std.log.debug("template: {any}", .{case.template});
@@ -97,7 +107,9 @@ fn solveTypes(self: *Swity, func: *Func) void {
             else
                 type_of_argument;
             // std.log.debug("type of evaluated arg: {any}", .{type_of_evaluated_argument});
-            if (case.next) |next| {
+            if (case.next) |*next| {
+                next.type_in = type_of_evaluated_argument;
+                next.type_out = type_out;
                 for (next.cases) |*child_case| {
                     solveTypesInner(
                         swity,
@@ -108,7 +120,10 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     );
                 }
             } else {
-                assert(isSubtype(swity.per_execution_arena.allocator(), swity.known_types, type_of_evaluated_argument, type_out));
+                if (!isSubtype(swity.per_execution_arena.allocator(), swity.known_types, type_of_evaluated_argument, type_out)) {
+                    std.log.err("expected type {any} to be a subtype of {any}", .{ type_of_evaluated_argument, type_out });
+                    unreachable;
+                }
             }
         }
 
