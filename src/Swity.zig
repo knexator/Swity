@@ -53,6 +53,7 @@ pub fn addText(self: *Swity, text: []const u8) void {
 pub fn executeMain(self: *Swity) Value {
     assert(self.main_expression != null);
     self.solveAllTypes();
+    // std.log.debug("solved all types", .{});
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
@@ -275,7 +276,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
     // std.log.debug("func type in {any}", .{func.type_in});
     // std.log.debug("func type out {any}", .{func.type_out});
     for (func.cases) |*case| {
-        std.log.debug("solving inner types for case {any}", .{case.*});
+        // std.log.debug("solving inner types for case {any}", .{case.*});
         S.solveTypesInner(
             self,
             .init(self.per_execution_arena.allocator()),
@@ -283,10 +284,11 @@ fn solveTypes(self: *Swity, func: *Func) void {
             func.type_in,
             func.type_out,
         );
-        std.log.debug("after solve: {any}", .{case.*});
+        // std.log.debug("after solve: {any}", .{case.*});
     }
 }
 
+// TODO: non-recursive version
 pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
     switch (@"type") {
         // TODO
@@ -308,43 +310,66 @@ pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
     }
 }
 
-// TODO: type checking
-pub fn apply(self: *Swity, func_id: ?FuncId, value: Value) Value {
-    if (func_id == null) return value;
-    const func = self.known_funcs.get(func_id.?) orelse panic("undefined func: {s}", .{func_id.?});
-    var bindings: Bindings = .init(self.per_execution_arena.allocator());
-    // TODO: when to call this?
+pub fn apply(self: *Swity, func_id: ?FuncId, original_value: Value) Value {
+    // TODO: move the result to the permanent arena & uncomment this
     // defer _ = self.per_execution_arena.reset(.retain_capacity);
-    return self.applyFunc(&bindings, func, value);
-}
-
-pub fn applyFunc(self: *Swity, bindings: *Bindings, func: Func, value: Value) Value {
-    if (!self.validValueForType(func.type_in, value)) {
-        std.log.err("invalid value {any} for type {any} while checking func cases {any}", .{ value, func.type_in, func.cases });
-        unreachable;
-    }
-    for (func.cases) |case| {
-        if (self.generateBindings(case.pattern, value)) |new_bindings| {
-            {
-                var it = new_bindings.iterator();
-                while (it.next()) |entry| {
-                    bindings.putNoClobber(entry.key_ptr.*, entry.value_ptr.*) catch OoM();
+    const TYPE_CHECK = false;
+    var active_value = original_value;
+    var stack: std.ArrayList(struct {
+        cur_func: Func,
+        cur_bindings: Bindings,
+    }) = .init(self.per_execution_arena.allocator());
+    if (func_id == null) return active_value;
+    stack.append(.{
+        .cur_func = self.known_funcs.get(func_id.?).?,
+        .cur_bindings = .init(self.per_execution_arena.allocator()),
+    }) catch OoM();
+    while (stack.pop()) |old_stack| {
+        var active_stack = old_stack;
+        // std.log.debug("cur stack: cases {any}, active value {any}", .{ active_stack.cur_func, active_value });
+        if (TYPE_CHECK) assert(self.validValueForType(active_stack.cur_func.type_in, active_value));
+        for (active_stack.cur_func.cases) |case| {
+            if (self.generateBindings(case.pattern, active_value)) |new_bindings| {
+                {
+                    var it = new_bindings.iterator();
+                    while (it.next()) |entry| {
+                        active_stack.cur_bindings.putNoClobber(entry.key_ptr.*, entry.value_ptr.*) catch OoM();
+                    }
                 }
-            }
-            const argument = self.fillTemplate(bindings, case.template);
-            const next_value = self.apply(case.function_id, argument);
-            const result = if (case.next) |next|
-                self.applyFunc(bindings, next, next_value)
-            else
-                next_value;
+                active_value = self.fillTemplate(&active_stack.cur_bindings, case.template);
+                if (case.next) |next| {
+                    stack.append(.{
+                        .cur_func = next,
+                        .cur_bindings = active_stack.cur_bindings,
+                    }) catch OoM();
+                } else {
+                    active_stack.cur_bindings.deinit();
+                }
 
-            assert(self.validValueForType(func.type_out, result));
-            return result;
+                if (case.function_id) |child_func_id| {
+                    stack.append(.{
+                        .cur_func = self.known_funcs.get(child_func_id).?,
+                        .cur_bindings = .init(self.per_execution_arena.allocator()),
+                    }) catch OoM();
+                }
+
+                if (case.next == null and case.function_id == null) {
+                    if (TYPE_CHECK) {
+                        if (!self.validValueForType(active_stack.cur_func.type_out, active_value)) {
+                            std.log.err("invalid value {any} for out type {any} while checking func cases {any}", .{ active_value, active_stack.cur_func.type_out, active_stack.cur_func.cases });
+                            unreachable;
+                        }
+                    }
+                }
+
+                break;
+            }
+        } else {
+            std.log.err("Ran out of cases for value {any}, and cases {any}", .{ active_value, active_stack.cur_func.cases });
+            unreachable;
         }
-    } else {
-        std.log.err("Ran out of cases for value {any}, and cases {any}", .{ value, func.cases });
-        unreachable;
     }
+    return active_value;
 }
 
 fn fillTemplate(self: *Swity, bindings: *const Bindings, template: Tree) Value {

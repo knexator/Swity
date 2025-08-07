@@ -28,10 +28,12 @@ pub fn main() !void {
         const source_code = try std.fs.cwd().readFileAlloc(gpa, arg, std.math.maxInt(usize));
         defer gpa.free(source_code);
         session.addText(source_code);
+        // std.log.debug("added text for file {s}", .{arg});
     }
 
     if (got_args) {
         const result = session.executeMain();
+        // std.log.debug("executed the thing", .{});
         try stdout.print("{any}\n", .{result});
     } else {
         try stdout.print("Usage: swity [files]", .{});

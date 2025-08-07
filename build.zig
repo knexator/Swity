@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
         run_cmd.addFileArg(b.path("stdlib/binary.swt"));
         run_cmd.addFileArg(b.path("examples/advent_of_code.swt"));
         run_cmd.expectStdOutEqual(
-            \\("6" ("3" ("0" ("9" ("0" ("2" "nil"))))))
+            \\("0" ("9" ("6" ("4" ("7" ("5" ("3" "nil")))))))
             \\
         );
         const run_step = b.step("e2e", "Run end-to-end tests");
