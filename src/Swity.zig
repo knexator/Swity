@@ -53,8 +53,109 @@ pub fn addText(self: *Swity, text: []const u8) void {
 pub fn executeMain(self: *Swity) Value {
     assert(self.main_expression != null);
     self.solveAllTypes();
+    self.optimizeAllFuncs();
     // std.log.debug("solved all types", .{});
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
+}
+
+pub fn optimizeAllFuncs(self: *Swity) void {
+    var it = self.known_funcs.valueIterator();
+    while (it.next()) |f| self.stackifyVariables(f);
+}
+
+fn stackifyVariables(swity: *Swity, parent_func: *Func) void {
+    const KnownVars = struct {
+        data: std.StringArrayHashMap(usize),
+        next_free: usize,
+
+        pub fn newVar(self: *@This(), v: *Tree.Variable) void {
+            const n = self.next_free;
+            v.stack_index = n;
+            self.data.putNoClobber(v.name, n) catch OoM();
+            self.next_free += 1;
+        }
+
+        pub fn clone(self: @This()) @This() {
+            return .{
+                .data = self.data.clone() catch OoM(),
+                .next_free = self.next_free,
+            };
+        }
+    };
+
+    const S = struct {
+        fn stackifyVariablesHelper(known_vars: *KnownVars, func: *Func) void {
+            func.stack_used_by_self_and_next = 0;
+            for (func.cases) |*case| {
+                var cur = known_vars.clone();
+                addPatternVariables(&cur, &case.pattern);
+                stackifyTemplateVariables(cur, &case.template);
+                if (case.next) |*next| {
+                    stackifyVariablesHelper(&cur, next);
+                    func.stack_used_by_self_and_next = @max(func.stack_used_by_self_and_next, next.stack_used_by_self_and_next);
+                } else {
+                    func.stack_used_by_self_and_next = @max(func.stack_used_by_self_and_next, cur.next_free);
+                }
+            }
+        }
+
+        fn addPatternVariables(known_vars: *KnownVars, pattern: *Tree) void {
+            switch (pattern.*) {
+                .literal => {},
+                .variable => |*v| known_vars.newVar(v),
+                .plex => |ps| for (ps) |*p| {
+                    addPatternVariables(known_vars, p);
+                },
+            }
+        }
+
+        fn stackifyTemplateVariables(known_vars: KnownVars, template: *Tree) void {
+            switch (template.*) {
+                .literal => {},
+                .variable => |*v| v.stack_index = known_vars.data.get(v.name).?,
+                .plex => |ps| for (ps) |*p| {
+                    stackifyTemplateVariables(known_vars, p);
+                },
+            }
+        }
+    };
+
+    defer _ = swity.parsing_arena.reset(.retain_capacity);
+    var asdfasdf: KnownVars = .{ .data = .init(swity.parsing_arena.allocator()), .next_free = 0 };
+    S.stackifyVariablesHelper(&asdfasdf, parent_func);
+}
+
+test "stackify variables" {
+    var session: Swity = .init(std.testing.allocator);
+    defer session.deinit();
+    session.addText(
+        \\ data Any {
+        \\     "A",
+        \\     (Any Any),
+        \\ }
+        \\
+        \\ fn foo: Any -> Any {
+        \\      (a b) -> b {
+        \\          (c d) -> a {
+        \\              (e f) -> (d f);
+        \\          }
+        \\      }
+        \\      b -> b;
+        \\ }
+    );
+
+    session.stackifyVariables(session.known_funcs.getPtr("foo").?);
+
+    const foo_func = session.known_funcs.get("foo").?;
+
+    // TODO: optimization pass to not store unused variables
+    // try std.testing.expectEqual(foo_func.stack_used_by_self_and_next, 4);
+
+    try std.testing.expectEqual(6, foo_func.stack_used_by_self_and_next);
+
+    try std.testing.expectEqual(1, foo_func.cases[0].template.variable.stack_index.?);
+    try std.testing.expectEqual(3, foo_func.cases[0].next.?.cases[0].next.?.cases[0].template.plex[0].variable.stack_index.?);
+    try std.testing.expectEqual(0, foo_func.cases[1].template.variable.stack_index.?);
 }
 
 pub fn solveAllTypes(self: *Swity) void {
@@ -70,7 +171,7 @@ pub fn solveAllTypes(self: *Swity) void {
 
 // TODO: check exhaustive matches
 fn solveTypes(self: *Swity, func: *Func) void {
-    const KnownVariables = if (Variable == []const u8) std.StringHashMap(Type) else std.AutoHashMap(Variable, Type);
+    const KnownVariables = std.StringHashMap(Type);
     const S = struct {
         test "typing" {
             var process: Swity = .init(std.testing.allocator);
@@ -136,10 +237,11 @@ fn solveTypes(self: *Swity, func: *Func) void {
         }
 
         // TODO: memory management
+        // TODO: KnownVariables could be an array
         fn findTypeOfArgument(arena: std.mem.Allocator, known: KnownVariables, template: Tree) Type {
             switch (template) {
                 .literal => |l| return .{ .literal = l },
-                .variable => |v| return known.get(v).?,
+                .variable => |v| return known.get(v.name).?,
                 .plex => |p| {
                     const result = arena.alloc(Type, p.len) catch OoM();
                     for (result, p) |*dst, t| {
@@ -155,7 +257,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
             switch (pattern) {
                 .literal => |pat_l| return swity.validValueForType(@"type", .{ .literal = pat_l }),
                 .variable => |v| {
-                    known.putNoClobber(v, @"type") catch OoM();
+                    known.putNoClobber(v.name, @"type") catch OoM();
                     return true;
                 },
                 .plex => |pat_p| switch (@"type") {
@@ -317,40 +419,37 @@ pub fn apply(self: *Swity, func_id: ?FuncId, original_value: Value) Value {
     var active_value = original_value;
     var stack: std.ArrayList(struct {
         cur_func: Func,
-        cur_bindings: Bindings,
+        cur_bindings: []Value,
+
+        pub fn init(swity: *Swity, id: FuncId) @This() {
+            const f = swity.known_funcs.get(id).?;
+            assert(f.stack_used_by_self_and_next != std.math.maxInt(usize));
+            return .{
+                .cur_func = f,
+                .cur_bindings = swity.per_execution_arena.allocator().alloc(Value, f.stack_used_by_self_and_next) catch OoM(),
+            };
+        }
     }) = .init(self.per_execution_arena.allocator());
     if (func_id == null) return active_value;
-    stack.append(.{
-        .cur_func = self.known_funcs.get(func_id.?).?,
-        .cur_bindings = .init(self.per_execution_arena.allocator()),
-    }) catch OoM();
-    while (stack.pop()) |old_stack| {
-        var active_stack = old_stack;
+    stack.append(.init(self, func_id.?)) catch OoM();
+    while (stack.pop()) |active_stack| {
         // std.log.debug("cur stack: cases {any}, active value {any}", .{ active_stack.cur_func, active_value });
         if (TYPE_CHECK) assert(self.validValueForType(active_stack.cur_func.type_in, active_value));
         for (active_stack.cur_func.cases) |case| {
-            if (self.generateBindings(case.pattern, active_value)) |new_bindings| {
-                {
-                    var it = new_bindings.iterator();
-                    while (it.next()) |entry| {
-                        active_stack.cur_bindings.putNoClobber(entry.key_ptr.*, entry.value_ptr.*) catch OoM();
-                    }
-                }
-                active_value = self.fillTemplate(&active_stack.cur_bindings, case.template);
+            if (generateBindings(case.pattern, active_value, active_stack.cur_bindings)) {
+                active_value = self.fillTemplate(active_stack.cur_bindings, case.template);
                 if (case.next) |next| {
                     stack.append(.{
                         .cur_func = next,
                         .cur_bindings = active_stack.cur_bindings,
                     }) catch OoM();
                 } else {
-                    active_stack.cur_bindings.deinit();
+                    // TODO: check if this is actually freed
+                    self.per_execution_arena.allocator().free(active_stack.cur_bindings);
                 }
 
                 if (case.function_id) |child_func_id| {
-                    stack.append(.{
-                        .cur_func = self.known_funcs.get(child_func_id).?,
-                        .cur_bindings = .init(self.per_execution_arena.allocator()),
-                    }) catch OoM();
+                    stack.append(.init(self, child_func_id)) catch OoM();
                 }
 
                 if (case.next == null and case.function_id == null) {
@@ -372,10 +471,10 @@ pub fn apply(self: *Swity, func_id: ?FuncId, original_value: Value) Value {
     return active_value;
 }
 
-fn fillTemplate(self: *Swity, bindings: *const Bindings, template: Tree) Value {
+fn fillTemplate(self: *Swity, bindings: []const Value, template: Tree) Value {
     switch (template) {
         .literal => |l| return .{ .literal = l },
-        .variable => |v| return bindings.get(v).?,
+        .variable => |v| return bindings[v.stack_index.?],
         .plex => |p| {
             const result = self.per_execution_arena.allocator().alloc(Value, p.len) catch OoM();
             for (result, p) |*dst, t| {
@@ -386,35 +485,22 @@ fn fillTemplate(self: *Swity, bindings: *const Bindings, template: Tree) Value {
     }
 }
 
-fn generateBindings(self: *Swity, pattern: Tree, value: Value) ?Bindings {
-    const S = struct {
-        fn generateBindingsHelper(cur: *Bindings, pat: Tree, val: Value) bool {
-            switch (pat) {
-                .literal => |pat_l| return val.isTheLiteral(pat_l),
-                .variable => |v| {
-                    cur.putNoClobber(v, val) catch OoM();
-                    return true;
-                },
-                .plex => |pat_p| switch (val) {
-                    else => return false,
-                    .plex => |val_p| {
-                        if (pat_p.len != val_p.len) return false;
-                        for (pat_p, val_p) |pp, vp| {
-                            if (!generateBindingsHelper(cur, pp, vp)) return false;
-                        } else return true;
-                    },
-                },
-            }
-        }
-    };
-
-    var result: Bindings = .init(self.per_execution_arena.allocator());
-    if (S.generateBindingsHelper(&result, pattern, value)) {
-        return result;
-    } else {
-        // TODO: measure if this .deinit actually does something
-        result.deinit();
-        return null;
+fn generateBindings(pattern: Tree, value: Value, bindings: []Value) bool {
+    switch (pattern) {
+        .literal => |pat_l| return value.isTheLiteral(pat_l),
+        .variable => |v| {
+            bindings[v.stack_index.?] = value;
+            return true;
+        },
+        .plex => |pat_p| switch (value) {
+            else => return false,
+            .plex => |val_p| {
+                if (pat_p.len != val_p.len) return false;
+                for (pat_p, val_p) |pp, vp| {
+                    if (!generateBindings(pp, vp, bindings)) return false;
+                } else return true;
+            },
+        },
     }
 }
 
@@ -438,6 +524,7 @@ test "one plus one" {
     const one: Value = .{ .plex = @constCast(&[2]Value{ succ, zero }) };
     const two: Value = .{ .plex = @constCast(&[2]Value{ succ, one }) };
 
+    session.optimizeAllFuncs();
     const actual = session.apply("sum", .{ .plex = @constCast(&[2]Value{ one, one }) });
     const expected = two;
 
@@ -476,6 +563,7 @@ test "three times two" {
     const five: Value = .{ .plex = @constCast(&[2]Value{ succ, four }) };
     const six: Value = .{ .plex = @constCast(&[2]Value{ succ, five }) };
 
+    session.optimizeAllFuncs();
     const actual = session.apply("mul", .{ .plex = @constCast(&[2]Value{ three, two }) });
     const expected = six;
 
@@ -540,7 +628,7 @@ const Parser = struct {
                     if (maybeLiteral(l)) |r| {
                         return .{ .literal = r };
                     } else {
-                        return .{ .variable = l };
+                        return .{ .variable = .{ .name = l, .stack_index = null } };
                     }
                 },
                 .plex => |p| {
@@ -975,35 +1063,35 @@ const Parser = struct {
             .type_out = .{ .ref = "Natural" },
             .cases = @constCast(&[2]Func.Case{
                 .{
-                    .pattern = .{ .plex = &.{
+                    .pattern = .{ .plex = @constCast(&[_]Tree{
                         .{ .literal = "zero" },
-                        .{ .variable = "b" },
-                    } },
+                        .{ .variable = .{ .name = "b" } },
+                    }) },
                     .function_id = null,
                     .template = .{ .literal = "zero" },
                     .next = null,
                 },
                 .{
-                    .pattern = .{ .plex = &.{
-                        .{ .plex = &.{
+                    .pattern = .{ .plex = @constCast(&[_]Tree{
+                        .{ .plex = @constCast(&[_]Tree{
                             .{ .literal = "succ" },
-                            .{ .variable = "a" },
-                        } },
-                        .{ .variable = "b" },
-                    } },
+                            .{ .variable = .{ .name = "a" } },
+                        }) },
+                        .{ .variable = .{ .name = "b" } },
+                    }) },
                     .function_id = "mul",
-                    .template = .{ .plex = &.{
-                        .{ .variable = "a" },
-                        .{ .variable = "b" },
-                    } },
+                    .template = .{ .plex = @constCast(&[_]Tree{
+                        .{ .variable = .{ .name = "a" } },
+                        .{ .variable = .{ .name = "b" } },
+                    }) },
                     .next = .{ .cases = @constCast(&[1]Func.Case{
                         .{
-                            .pattern = .{ .variable = "x" },
+                            .pattern = .{ .variable = .{ .name = "x" } },
                             .function_id = "sum",
-                            .template = .{ .plex = &.{
-                                .{ .variable = "x" },
-                                .{ .variable = "b" },
-                            } },
+                            .template = .{ .plex = @constCast(&[_]Tree{
+                                .{ .variable = .{ .name = "x" } },
+                                .{ .variable = .{ .name = "b" } },
+                            }) },
                             .next = null,
                         },
                     }), .type_in = .unresolved, .type_out = .unresolved },
@@ -1019,7 +1107,6 @@ const Parser = struct {
 
 pub const TypeId = []const u8;
 pub const FuncId = []const u8;
-pub const Variable = []const u8;
 
 pub const Value = union(enum) {
     literal: []const u8,
@@ -1096,9 +1183,12 @@ pub const Type = union(enum) {
 };
 
 pub const Tree = union(enum) {
+    pub const Variable = struct { name: []const u8, stack_index: ?usize = null };
+
     literal: []const u8,
     variable: Variable,
-    plex: []const Tree,
+    // TODO: make const?
+    plex: []Tree,
 
     pub fn format(
         self: @This(),
@@ -1110,7 +1200,7 @@ pub const Tree = union(enum) {
         assert(std.meta.eql(options, .{}));
         switch (self) {
             .literal => |l| try writer.print("\"{s}\"", .{l}),
-            .variable => |v| try writer.writeAll(v),
+            .variable => |v| try writer.writeAll(v.name),
             .plex => |ps| {
                 try writer.writeAll("(");
                 for (ps) |p| {
@@ -1127,6 +1217,9 @@ pub const Func = struct {
     type_in: Type,
     type_out: Type,
     cases: []Case,
+
+    // TODO: should be undefined
+    stack_used_by_self_and_next: usize = std.math.maxInt(usize),
 
     pub const Case = struct {
         pattern: Tree,
@@ -1172,8 +1265,6 @@ pub const Func = struct {
         try writer.writeAll("}");
     }
 };
-
-pub const Bindings = if (Variable == []const u8) std.StringHashMap(Value) else std.AutoHashMap(Variable, Value);
 
 fn OoM() noreturn {
     panic("OoM", .{});
