@@ -11,7 +11,7 @@ data String {
     (Char String),
 }
 
-// TODO: the optimizer should not keep "diffs" in memory
+// TODO: the optimized execution should not keep "diffs" in memory
 fn day1_puzzle1: String -> String {
     input -> day1_parse: input {
         (col_1 col_2) -> sort-list-of-binary-numbers: col_1 {
@@ -25,6 +25,43 @@ fn day1_puzzle1: String -> String {
         }
     }
 }
+
+fn day1_puzzle2: String -> String {
+    input -> day1_parse: input {
+        (col_1 col_2) -> day1_puzzle2_computescores: (col_1 col_2 "nil") {
+            scores -> sum-all: scores {
+                result -> decimal-from-binary: result;
+            }
+        }
+    }
+}
+
+// TODO: actual hashmap
+data DictOfBinaryNumbersToBinaryNumbers {
+    "nil", 
+    // TODO: should the optimizer undo this nesting?
+    ((BinaryNumber BinaryNumber) DictOfBinaryNumbersToBinaryNumbers),
+}
+
+fn day1_puzzle2_computescores: (ListOfBinaryNumbers ListOfBinaryNumbers DictOfBinaryNumbersToBinaryNumbers) -> ListOfBinaryNumbers {
+    ("nil" col2 seen) -> "nil";
+    ((n rest) col2 seen) -> lookup-DictOfBinaryNumbersToBinaryNumbers: n {
+        // TODO: maybe peano
+        "null" -> count-how-many: (n col2) {
+            count -> binary-multiply: (count n) {
+                score -> putNoClobber-DictOfBinaryNumbersToBinaryNumbers: ((n score) seen) {
+                    new_seen: day1_puzzle2_computescores: (rest col2 new_seen) {
+                        rest_done -> (score rest_done);
+                    }
+                }
+            }
+        }
+        ("found" r) -> day1_puzzle2_computescores: (rest col2 seen) {
+            rest_done -> (r rest_done);
+        }
+    }
+}
+
 
 fn zip-differences: (ListOfBinaryNumbers ListOfBinaryNumbers) -> ListOfBinaryNumbers {
     ("nil" "nil") -> "nil";
