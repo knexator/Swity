@@ -163,8 +163,82 @@ data ListOfBinaryNumbers {
     (BinaryNumber ListOfBinaryNumbers),
 }
 
-// TODO: better sort
+// first child has equal or less elements than the second one
+data HeapOfBinaryNumbers {
+    "nil",
+    (BinaryNumber HeapOfBinaryNumbers HeapOfBinaryNumbers),
+}
+
+fn heapify: ListOfBinaryNumbers -> HeapOfBinaryNumbers {
+    // [0 1 1 2 2 2 2 3 3 3 3 3 3 3 3]
+    i -> heapify-helper: (i "nil");
+}
+
+fn heapify-helper: (ListOfBinaryNumbers HeapOfBinaryNumbers) -> HeapOfBinaryNumbers {
+    ("nil" h) -> h;
+    ((f rest) h) -> heapify-siftdown: (f h) {
+        h2 -> heapify-helper: (rest h2);
+    }
+}
+
+fn heapify-siftdown: (BinaryNumber HeapOfBinaryNumbers) -> HeapOfBinaryNumbers {
+    (n "nil") -> (n "nil" "nil");
+    (n (r x y)) -> binary-compare: (n r) {
+        "second_is_greater" -> heapify-siftdown: (n x) {
+            x2 -> (r y x2);
+        }
+        else -> heapify-siftdown: (r x) {
+            x2 -> (n y x2);
+        }
+    }
+}
+
+fn heapify-popmax: HeapOfBinaryNumbers -> {
+    "nil",
+    (BinaryNumber HeapOfBinaryNumbers),
+} {
+    h -> heapify-popmax-incorrect: h;
+}
+
+// the returned heap is possibly unbalanced!
+fn heapify-popmax-incorrect: HeapOfBinaryNumbers -> {
+    "nil",
+    (BinaryNumber HeapOfBinaryNumbers),
+} {
+    "nil" -> "nil";
+    (r x "nil") -> (r x);
+    (r "nil" y) -> (r y);
+    (r (xr xx xy) (yr yx yy)) -> binary-compare: (xr yr) {
+        "second_is_greater" -> heapify-popmax-incorrect: (yr yx yy) {
+            (nr y2) -> (r (nr (xr xx xy) y2));
+        }
+        else -> heapify-popmax-incorrect: (xr xx xy) {
+            (nr x2) -> (r (nr x2 (yr yx yy)));
+        }
+    }
+}
+
+fn heapsort-repeatedly-pop: HeapOfBinaryNumbers -> ListOfBinaryNumbers {
+    h -> heapify-popmax: h {
+        "nil" -> "nil";
+        (v rh) -> heapsort-repeatedly-pop: rh {
+            r -> (v r);
+        }
+    }
+}
+
+fn heapsort-list-of-binary-numbers: ListOfBinaryNumbers -> ListOfBinaryNumbers {
+    i -> heapify: i {
+        h -> heapsort-repeatedly-pop: h;
+    }
+}
+
 fn sort-list-of-binary-numbers: ListOfBinaryNumbers -> ListOfBinaryNumbers {
+    // l -> insertionsort-list-of-binary-numbers: l;
+    l -> heapsort-list-of-binary-numbers: l;
+}
+
+fn insertionsort-list-of-binary-numbers: ListOfBinaryNumbers -> ListOfBinaryNumbers {
     "nil" -> "nil";
     (first rest) -> sort-list-of-binary-numbers: rest {
         sorted_rest -> _sort-helper: (first sorted_rest);
