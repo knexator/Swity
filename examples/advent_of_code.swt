@@ -28,7 +28,7 @@ fn day1_puzzle1: String -> String {
 
 fn day1_puzzle2: String -> String {
     input -> day1_parse: input {
-        (col_1 col_2) -> day1_puzzle2_computescores: (col_1 col_2 ("nil" "nil")) {
+        (col_1 col_2) -> day1_puzzle2_computescores: (col_1 col_2 ("nil" "nil" "nil" "nil")) {
             scores -> sum-all: scores {
                 result -> decimal-from-binary: result;
             }
@@ -76,27 +76,45 @@ fn putNoClobber-ListOfPairsOfBinaryNumbers: ((BinaryNumber BinaryNumber) ListOfP
     ((k v) d) -> ((k v) d);
 }
 
-// two lists, the 'hash' is the lowest bit
-data DictOfBinaryNumbersToBinaryNumbers (ListOfPairsOfBinaryNumbers ListOfPairsOfBinaryNumbers)
+// TODO: measure the effect of hashmap depth
+
+// four lists, the 'hash' is the lowest 2 bits
+data DictOfBinaryNumbersToBinaryNumbers (ListOfPairsOfBinaryNumbers ListOfPairsOfBinaryNumbers ListOfPairsOfBinaryNumbers ListOfPairsOfBinaryNumbers)
 
 fn lookup-DictOfBinaryNumbersToBinaryNumbers: (BinaryNumber DictOfBinaryNumbersToBinaryNumbers) -> {
     "null",
     ("found" BinaryNumber),
 } {
-    ("nil" (b0 b1)) -> lookup-ListOfPairsOfBinaryNumbers: ("nil" b0);
-    (("b0" n) (b0 b1)) -> lookup-ListOfPairsOfBinaryNumbers: (n b0);
-    (("b1" n) (b0 b1)) -> lookup-ListOfPairsOfBinaryNumbers: (n b1);
+    ("nil" (b00 b01 b10 b11)) -> lookup-ListOfPairsOfBinaryNumbers: ("nil" b00);
+    (("b0" "nil") (b00 b01 b10 b11)) -> lookup-ListOfPairsOfBinaryNumbers: ("nil" b00);
+    (("b1" "nil") (b00 b01 b10 b11)) -> lookup-ListOfPairsOfBinaryNumbers: ("nil" b10);
+    (("b0" ("b0" n)) (b00 b01 b10 b11)) -> lookup-ListOfPairsOfBinaryNumbers: (n b00);
+    (("b0" ("b1" n)) (b00 b01 b10 b11)) -> lookup-ListOfPairsOfBinaryNumbers: (n b01);
+    (("b1" ("b0" n)) (b00 b01 b10 b11)) -> lookup-ListOfPairsOfBinaryNumbers: (n b10);
+    (("b1" ("b1" n)) (b00 b01 b10 b11)) -> lookup-ListOfPairsOfBinaryNumbers: (n b11);
 }
 
 fn putNoClobber-DictOfBinaryNumbersToBinaryNumbers: ((BinaryNumber BinaryNumber) DictOfBinaryNumbersToBinaryNumbers) -> DictOfBinaryNumbersToBinaryNumbers {
-    (("nil" v) (b0 b1)) -> putNoClobber-ListOfPairsOfBinaryNumbers: (("nil" v) b0) {
-        new_b0 -> (new_b0 b1);
+    (("nil" v) (b00 b01 b10 b11)) -> putNoClobber-ListOfPairsOfBinaryNumbers: (("nil" v) b00) {
+        new_b00 -> (new_b00 b01 b10 b11);
     }
-    ((("b0" k) v) (b0 b1)) -> putNoClobber-ListOfPairsOfBinaryNumbers: ((k v) b0) {
-        new_b0 -> (new_b0 b1);
+    ((("b0" "nil") v) (b00 b01 b10 b11)) -> putNoClobber-ListOfPairsOfBinaryNumbers: (("nil" v) b00) {
+        new_b00 -> (new_b00 b01 b10 b11);
     }
-    ((("b1" k) v) (b0 b1)) -> putNoClobber-ListOfPairsOfBinaryNumbers: ((k v) b1) {
-        new_b1 -> (b0 new_b1);
+    ((("b1" "nil") v) (b00 b01 b10 b11)) -> putNoClobber-ListOfPairsOfBinaryNumbers: (("nil" v) b10) {
+        new_b10 -> (b00 b01 new_b10 b11);
+    }
+    ((("b0" ("b0" k)) v) (b00 b01 b10 b11)) -> putNoClobber-ListOfPairsOfBinaryNumbers: ((k v) b00) {
+        new_b00 -> (new_b00 b01 b10 b11);
+    }
+    ((("b1" ("b0" k)) v) (b00 b01 b10 b11)) -> putNoClobber-ListOfPairsOfBinaryNumbers: ((k v) b10) {
+        new_b10 -> (b00 b01 new_b10 b11);
+    }
+    ((("b0" ("b1" k)) v) (b00 b01 b10 b11)) -> putNoClobber-ListOfPairsOfBinaryNumbers: ((k v) b01) {
+        new_b01 -> (b00 new_b01 b10 b11);
+    }
+    ((("b1" ("b1" k)) v) (b00 b01 b10 b11)) -> putNoClobber-ListOfPairsOfBinaryNumbers: ((k v) b11) {
+        new_b11 -> (b00 b01 b10 new_b11);
     }
 }
 
