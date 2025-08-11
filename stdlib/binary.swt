@@ -17,8 +17,8 @@ fn binary-eql?: (BinaryNumber BinaryNumber) -> {
     ("nil" "nil") -> "true";
     (a "nil") -> "false";
     ("nil" b) -> "false";
-    (("b0" a) ("b0" b)) -> "true";
-    (("b1" a) ("b1" b)) -> "true";
+    (("b0" a) ("b0" b)) -> binary-eql?: (a b);
+    (("b1" a) ("b1" b)) -> binary-eql?: (a b);
     else -> "false";
 }
 
@@ -64,7 +64,7 @@ fn binary-times-10: BinaryNumber -> BinaryNumber {
 fn binary-multiply: (BinaryNumber BinaryNumber) -> BinaryNumber {
     (a "nil") -> "nil";
     (a ("b0" rest)) -> binary-multiply: (a rest) {
-        r -> ("b0" r);
+        r -> binary-normalize: ("b0" r);
     }
     (a ("b1" rest)) -> binary-multiply: (a rest) {
         r -> binary-add: (a ("b0" r));
