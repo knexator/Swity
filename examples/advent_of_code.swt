@@ -45,12 +45,12 @@ data DictOfBinaryNumbersToBinaryNumbers {
 
 fn day1_puzzle2_computescores: (ListOfBinaryNumbers ListOfBinaryNumbers DictOfBinaryNumbersToBinaryNumbers) -> ListOfBinaryNumbers {
     ("nil" col2 seen) -> "nil";
-    ((n rest) col2 seen) -> lookup-DictOfBinaryNumbersToBinaryNumbers: n {
+    ((n rest) col2 seen) -> lookup-DictOfBinaryNumbersToBinaryNumbers: (n seen) {
         // TODO: maybe peano
         "null" -> count-how-many: (n col2) {
             count -> binary-multiply: (count n) {
                 score -> putNoClobber-DictOfBinaryNumbersToBinaryNumbers: ((n score) seen) {
-                    new_seen: day1_puzzle2_computescores: (rest col2 new_seen) {
+                    new_seen -> day1_puzzle2_computescores: (rest col2 new_seen) {
                         rest_done -> (score rest_done);
                     }
                 }
@@ -62,6 +62,30 @@ fn day1_puzzle2_computescores: (ListOfBinaryNumbers ListOfBinaryNumbers DictOfBi
     }
 }
 
+fn lookup-DictOfBinaryNumbersToBinaryNumbers: (BinaryNumber DictOfBinaryNumbersToBinaryNumbers) -> {
+    "null",
+    ("found" BinaryNumber),
+} {
+    (x "nil") -> "null";
+    (x ((k v) rest)) -> binary-eql?: (x k) {
+        "true" -> ("found" v);
+        "false" -> lookup-DictOfBinaryNumbersToBinaryNumbers: (x rest);
+    }
+}
+
+fn putNoClobber-DictOfBinaryNumbersToBinaryNumbers:((BinaryNumber BinaryNumber) DictOfBinaryNumbersToBinaryNumbers) -> DictOfBinaryNumbersToBinaryNumbers {
+    ((k v) d) -> ((k v) d);    
+}
+
+fn count-how-many: (BinaryNumber ListOfBinaryNumbers) -> BinaryNumber {
+    (n "nil") -> "nil";
+    (n (f r)) -> count-how-many: (n r) {
+        rc -> binary-eql?: (n f) {
+            "true" -> binary-inc: rc;
+            "false" -> rc;
+        }
+    }
+}
 
 fn zip-differences: (ListOfBinaryNumbers ListOfBinaryNumbers) -> ListOfBinaryNumbers {
     ("nil" "nil") -> "nil";
@@ -93,7 +117,7 @@ fn day1_parse: String -> (ListOfBinaryNumbers ListOfBinaryNumbers) {
                 }
 } 
 
-main day1_puzzle1: <<EOF
+main day1_puzzle2: <<EOF
 41226   69190
 89318   10100
 59419   23880

@@ -9,6 +9,19 @@ data BinaryNumber {
     (Bit BinaryNumber),
 }
 
+// assumes numbers are normalized (no leading zeros)
+fn binary-eql?: (BinaryNumber BinaryNumber) -> {
+    "false",
+    "true",
+} {
+    ("nil" "nil") -> "true";
+    (a "nil") -> "false";
+    ("nil" b) -> "false";
+    (("b0" a) ("b0" b)) -> "true";
+    (("b1" a) ("b1" b)) -> "true";
+    else -> "false";
+}
+
 fn binary-inc: BinaryNumber -> BinaryNumber {
     "nil" -> ("b1" "nil");
     ("b0" rest) -> ("b1" rest);
@@ -45,6 +58,16 @@ fn binary-times-10: BinaryNumber -> BinaryNumber {
                 x8 -> binary-add: (x2 x8);
             }
         }
+    }
+}
+
+fn binary-multiply: (BinaryNumber BinaryNumber) -> BinaryNumber {
+    (a "nil") -> "nil";
+    (a ("b0" rest)) -> binary-multiply: (a rest) {
+        r -> ("b0" r);
+    }
+    (a ("b1" rest)) -> binary-multiply: (a rest) {
+        r -> binary-add: (a ("b0" r));
     }
 }
 

@@ -169,6 +169,15 @@ pub fn solveAllTypes(self: *Swity) void {
     }
 }
 
+fn getFunc(self: Swity, func_id: FuncId) Func {
+    if (self.known_funcs.get(func_id)) |f| {
+        return f;
+    } else {
+        std.log.err("Could not find func with id {s}", .{func_id});
+        unreachable;
+    }
+}
+
 // TODO: check exhaustive matches
 fn solveTypes(self: *Swity, func: *Func) void {
     const KnownVariables = std.StringHashMap(Type);
@@ -200,12 +209,15 @@ fn solveTypes(self: *Swity, func: *Func) void {
         fn solveTypesInner(swity: *Swity, parent_known: KnownVariables, case: *Func.Case, type_in: Type, type_out: Type) void {
             // std.log.err("solving types inner for case {any} with type in {any}", .{ case, type_in });
             var known = parent_known.clone() catch OoM();
-            assert(bindTypes(swity.*, &known, case.pattern, type_in));
+            if (!bindTypes(swity.*, &known, case.pattern, type_in)) {
+                std.log.err("could not bind pattern {any} to type {any}", .{ case.pattern, type_in });
+                unreachable;
+            }
             // std.log.debug("template: {any}", .{case.template});
             const type_of_argument: Type = findTypeOfArgument(swity.permanent_arena.allocator(), known, case.template);
             // std.log.debug("type of arg: {any}", .{type_of_argument});
             const type_of_evaluated_argument: Type = if (case.function_id) |func_id|
-                findTypeOfResult(swity.permanent_arena.allocator(), swity.known_funcs.get(func_id).?, type_of_argument)
+                findTypeOfResult(swity.permanent_arena.allocator(), swity.getFunc(func_id), type_of_argument)
             else
                 type_of_argument;
             // std.log.debug("type of evaluated arg: {any}", .{type_of_evaluated_argument});
