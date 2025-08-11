@@ -37,19 +37,19 @@ fn day1_puzzle2: String -> String {
 }
 
 // TODO: actual hashmap
-data DictOfBinaryNumbersToBinaryNumbers {
-    "nil", 
+data ListOfPairsOfBinaryNumbers {
+    "nil",
     // TODO: should the optimizer undo this nesting?
-    ((BinaryNumber BinaryNumber) DictOfBinaryNumbersToBinaryNumbers),
+    ((BinaryNumber BinaryNumber) ListOfPairsOfBinaryNumbers),
 }
 
-fn day1_puzzle2_computescores: (ListOfBinaryNumbers ListOfBinaryNumbers DictOfBinaryNumbersToBinaryNumbers) -> ListOfBinaryNumbers {
+fn day1_puzzle2_computescores: (ListOfBinaryNumbers ListOfBinaryNumbers ListOfPairsOfBinaryNumbers) -> ListOfBinaryNumbers {
     ("nil" col2 seen) -> "nil";
-    ((n rest) col2 seen) -> lookup-DictOfBinaryNumbersToBinaryNumbers: (n seen) {
+    ((n rest) col2 seen) -> lookup-ListOfPairsOfBinaryNumbers: (n seen) {
         // TODO: maybe peano
         "null" -> count-how-many: (n col2) {
             count -> binary-multiply: (count n) {
-                score -> putNoClobber-DictOfBinaryNumbersToBinaryNumbers: ((n score) seen) {
+                score -> putNoClobber-ListOfPairsOfBinaryNumbers: ((n score) seen) {
                     new_seen -> day1_puzzle2_computescores: (rest col2 new_seen) {
                         rest_done -> (score rest_done);
                     }
@@ -62,19 +62,56 @@ fn day1_puzzle2_computescores: (ListOfBinaryNumbers ListOfBinaryNumbers DictOfBi
     }
 }
 
-fn lookup-DictOfBinaryNumbersToBinaryNumbers: (BinaryNumber DictOfBinaryNumbersToBinaryNumbers) -> {
+fn lookup-ListOfPairsOfBinaryNumbers: (BinaryNumber ListOfPairsOfBinaryNumbers) -> {
     "null",
     ("found" BinaryNumber),
 } {
     (x "nil") -> "null";
     (x ((k v) rest)) -> binary-eql?: (x k) {
         "true" -> ("found" v);
-        "false" -> lookup-DictOfBinaryNumbersToBinaryNumbers: (x rest);
+        "false" -> lookup-ListOfPairsOfBinaryNumbers: (x rest);
     }
 }
 
-fn putNoClobber-DictOfBinaryNumbersToBinaryNumbers:((BinaryNumber BinaryNumber) DictOfBinaryNumbersToBinaryNumbers) -> DictOfBinaryNumbersToBinaryNumbers {
+fn putNoClobber-ListOfPairsOfBinaryNumbers:((BinaryNumber BinaryNumber) ListOfPairsOfBinaryNumbers) -> ListOfPairsOfBinaryNumbers {
     ((k v) d) -> ((k v) d);    
+}
+
+data MapOfBinaryNumbersToBinaryNumbers {
+    "nil",
+    ({
+        ("found" BinaryNumber),
+        "null",
+    } MapOfBinaryNumbersToBinaryNumbers MapOfBinaryNumbersToBinaryNumbers),
+}
+
+fn lookup-MapOfBinaryNumbersToBinaryNumbers: (BinaryNumber MapOfBinaryNumbersToBinaryNumbers) -> {
+    "null",
+    ("found" BinaryNumber),
+} {
+    (x "nil") -> "null";
+    ("nil" (v b0 b1)) -> v;
+    (("b0" n) (v b0 b1)) -> lookup-MapOfBinaryNumbersToBinaryNumbers: (n b0);
+    (("b1" n) (v b0 b1)) -> lookup-MapOfBinaryNumbersToBinaryNumbers: (n b1);
+}
+
+fn putNoClobber-MapOfBinaryNumbersToBinaryNumbers: ((BinaryNumber BinaryNumber) MapOfBinaryNumbersToBinaryNumbers) -> MapOfBinaryNumbersToBinaryNumbers {
+    (("nil" v) "nil") -> (("found" v) "nil" "nil");
+    (("nil" v) (old_v b0 b1)) -> (("found" v) b0 b1);
+
+    ((("b0" n) v) "nil") -> putNoClobber-MapOfBinaryNumbersToBinaryNumbers: ((n v) "nil") {
+        new_b0 -> ("null" new_b0 "nil");
+    }
+    ((("b1" n) v) "nil") -> putNoClobber-MapOfBinaryNumbersToBinaryNumbers: ((n v) "nil") {
+        new_b1 -> ("null" "nil" new_b1);
+    }
+
+    ((("b0" n) v) (old_v b0 b1)) -> putNoClobber-MapOfBinaryNumbersToBinaryNumbers: ((n v) b0) {
+        new_b0 -> (old_v new_b0 b1);
+    }
+    ((("b1" n) v) (old_v b0 b1)) -> putNoClobber-MapOfBinaryNumbersToBinaryNumbers: ((n v) b1) {
+        new_b1 -> (old_v b0 new_b1);
+    }
 }
 
 fn count-how-many: (BinaryNumber ListOfBinaryNumbers) -> BinaryNumber {

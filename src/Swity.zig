@@ -253,7 +253,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
         fn findTypeOfArgument(arena: std.mem.Allocator, known: KnownVariables, template: Tree) Type {
             switch (template) {
                 .literal => |l| return .{ .literal = l },
-                .variable => |v| return known.get(v.name).?,
+                .variable => |v| return known.get(v.name) orelse panic("unknown variable {s}", .{v.name}),
                 .plex => |p| {
                     const result = arena.alloc(Type, p.len) catch OoM();
                     for (result, p) |*dst, t| {
