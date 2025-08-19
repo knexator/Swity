@@ -195,7 +195,7 @@ fn day1_parse: String -> (ListOfBinaryNumbers ListOfBinaryNumbers) {
                 }
 } 
 
-main day1_puzzle2: <<EOF
+main day1_puzzle1: <<EOF
 41226   69190
 89318   10100
 59419   23880
