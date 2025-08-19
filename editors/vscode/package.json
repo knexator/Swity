@@ -1,0 +1,47 @@
+{
+    "name": "lsp-swity-client",
+    "description": "VSCode support for Swity",
+    "author": "knexator",
+    "version": "0.0.1",
+    "publisher": "knexator",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/knexator/Swity"
+    },
+    "engines": {
+        "vscode": "^1.100.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "swity",
+                "aliases": [
+                    "swity",
+                    "Swity"
+                ],
+                "extensions": [
+                    ".swt"
+                ],
+                "configuration": "./swt.configuration.json"
+            }
+        ]
+    },
+    "main": "out/extension",
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/vscode": "^1.90.0",
+        "@vscode/vsce": "^3.6.0",
+        "esbuild": "^0.25.0"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run build-base -- --minify",
+        "build-base": "esbuild --bundle --external:vscode extension.ts --outdir=out --platform=node --format=cjs",
+        "build": "npm run build-base -- --sourcemap"
+    }
+}

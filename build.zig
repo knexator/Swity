@@ -4,10 +4,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const lsp = b.dependency("lsp_kit", .{}).module("lsp");
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp },
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -39,6 +44,7 @@ pub fn build(b: *std.Build) void {
     {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
+        run_cmd.addArg("run");
         run_cmd.addFileArg(b.path("stdlib/binary.swt"));
         run_cmd.addFileArg(b.path("examples/advent_of_code.swt"));
         run_cmd.expectStdOutEqual(

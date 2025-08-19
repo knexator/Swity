@@ -36,6 +36,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+        .lsp_kit = .{
+            .url = "git+https://github.com/zigtools/lsp-kit.git?ref=0.14.x#d8409f4681c691a49bbe17b3d43091cee1e23a6f",
+            .hash = "lsp_kit-0.1.0-bi_PL55FCgBThQiPVIVq8oNetk35rikjMRWzpo4blOLt",
+        },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding

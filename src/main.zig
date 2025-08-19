@@ -19,24 +19,22 @@ pub fn main() !void {
     defer args.deinit();
     assert(args.skip());
 
-    var got_args = false;
+    const mode = args.next() orelse "help";
 
-    var session: Swity = .init(gpa);
-    defer session.deinit();
-    while (args.next()) |arg| {
-        got_args = true;
-        const source_code = try std.fs.cwd().readFileAlloc(gpa, arg, std.math.maxInt(usize));
-        defer gpa.free(source_code);
-        session.addText(source_code);
-        // std.log.debug("added text for file {s}", .{arg});
-    }
-
-    if (got_args) {
+    if (std.mem.eql(u8, mode, "lsp")) {
+        try @import("lsp.zig").run(gpa);
+    } else if (std.mem.eql(u8, mode, "run")) {
+        var session: Swity = .init(gpa);
+        defer session.deinit();
+        while (args.next()) |arg| {
+            const source_code = try std.fs.cwd().readFileAlloc(gpa, arg, std.math.maxInt(usize));
+            defer gpa.free(source_code);
+            session.addText(source_code);
+        }
         const result = session.executeMain();
-        // std.log.debug("executed the thing", .{});
         try stdout.print("{any}\n", .{result});
     } else {
-        try stdout.print("Usage: swity [files]", .{});
+        try stdout.print("Usage:\n\tswity run [files]\n\tswity lsp", .{});
     }
 
     try bw.flush();
