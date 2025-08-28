@@ -45,7 +45,6 @@ pub fn build(b: *std.Build) void {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
         run_cmd.addArg("run");
-        run_cmd.addFileArg(b.path("stdlib/binary.swt"));
         run_cmd.addFileArg(b.path("examples/advent_of_code.swt"));
         run_cmd.expectStdOutEqual(
             \\("0" ("9" ("6" ("4" ("7" ("5" ("3" "nil")))))))

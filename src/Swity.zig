@@ -7,6 +7,7 @@ main_expression: ?struct {
     func_id: FuncId,
     argument: Value,
 } = null,
+files: std.StringArrayHashMap(bool),
 
 parsing_arena: std.heap.ArenaAllocator,
 per_execution_arena: std.heap.ArenaAllocator,
@@ -19,6 +20,7 @@ duplicated_source_arena: std.heap.ArenaAllocator,
 
 pub fn init(gpa: std.mem.Allocator) Swity {
     return .{
+        .files = .init(gpa),
         .known_types = .init(gpa),
         .known_funcs = .init(gpa),
         .duplicated_source_arena = .init(gpa),
@@ -29,6 +31,7 @@ pub fn init(gpa: std.mem.Allocator) Swity {
 }
 
 pub fn deinit(self: *Swity) void {
+    self.files.deinit();
     self.known_types.deinit();
     self.known_funcs.deinit();
     self.parsing_arena.deinit();
@@ -37,12 +40,37 @@ pub fn deinit(self: *Swity) void {
     self.per_execution_arena.deinit();
 }
 
-pub fn addText(self: *Swity, text: []const u8) void {
-    const owned_text = self.duplicated_source_arena.allocator().dupe(u8, text) catch OoM();
+pub fn addIncludeFile(self: *Swity, uri: []const u8) void {
+    const kv = self.files.getOrPut(uri) catch OoM();
+    if (kv.found_existing) {
+        return;
+    } else {
+        kv.key_ptr.* = self.permanent_arena.allocator().dupe(u8, uri) catch OoM();
+        kv.value_ptr.* = false;
+    }
+}
 
+fn addAllPendingTextRecursive(self: *Swity) !void {
+    var it = self.files.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.* == false) {
+            kv.value_ptr.* = true;
+            const file = try std.fs.openFileAbsolute(kv.key_ptr.*, .{});
+            const text = try file.readToEndAlloc(self.duplicated_source_arena.allocator(), std.math.maxInt(usize));
+            self.addText(kv.key_ptr.*, text);
+            break;
+        }
+    } else return;
+
+    // we processed a file, so let's call it again since it might have had its own includes
+    try self.addAllPendingTextRecursive();
+}
+
+fn addText(self: *Swity, source_uri: []const u8, text: []const u8) void {
     var parser: Parser = .{
         .swity = self,
-        .remaining_text = owned_text,
+        .source_uri = source_uri,
+        .remaining_text = text,
         .arena = self.parsing_arena.allocator(),
         .result = self.permanent_arena.allocator(),
     };
@@ -50,7 +78,12 @@ pub fn addText(self: *Swity, text: []const u8) void {
     _ = self.parsing_arena.reset(.retain_capacity);
 }
 
-pub fn executeMain(self: *Swity) Value {
+fn addReplText(self: *Swity, text: []const u8) void {
+    self.addText("REPL", text);
+}
+
+pub fn executeMain(self: *Swity) !Value {
+    try self.addAllPendingTextRecursive();
     assert(self.main_expression != null);
     self.solveAllTypes();
     self.optimizeAllFuncs();
@@ -58,7 +91,7 @@ pub fn executeMain(self: *Swity) Value {
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
 }
 
-pub fn optimizeAllFuncs(self: *Swity) void {
+fn optimizeAllFuncs(self: *Swity) void {
     var it = self.known_funcs.valueIterator();
     while (it.next()) |f| self.stackifyVariables(f);
 }
@@ -128,7 +161,7 @@ fn stackifyVariables(swity: *Swity, parent_func: *Func) void {
 test "stackify variables" {
     var session: Swity = .init(std.testing.allocator);
     defer session.deinit();
-    session.addText(
+    session.addReplText(
         \\ data Any {
         \\     "A",
         \\     (Any Any),
@@ -186,7 +219,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
             var process: Swity = .init(std.testing.allocator);
             defer process.deinit();
 
-            process.addText(
+            process.addReplText(
                 \\ data Foo ( "A" "B" )
                 \\
                 \\ fn Bar: Foo -> "B" {
@@ -300,7 +333,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
             var process: Swity = .init(std.testing.allocator);
             defer process.deinit();
 
-            process.addText(
+            process.addReplText(
                 \\ data ListOfA {
                 \\      "nil",
                 \\      ("A" ListOfA),  
@@ -409,7 +442,7 @@ pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
         // .unresolved => unreachable,
         .unresolved => return true,
         .literal => |l| return value.isTheLiteral(l),
-        .ref => |r| return self.validValueForType(self.known_types.get(r).?, value),
+        .ref => |r| return self.validValueForType(self.known_types.get(r) orelse panic("unknown type {s}", .{r}), value),
         .oneof => |options| for (options) |o| {
             if (self.validValueForType(o, value)) return true;
         } else return false,
@@ -519,7 +552,7 @@ fn generateBindings(pattern: Tree, value: Value, bindings: []Value) bool {
 test "one plus one" {
     var session: Swity = .init(std.testing.allocator);
     defer session.deinit();
-    session.addText(
+    session.addReplText(
         \\ data Natural {
         \\      "zero",
         \\      ("succ" Natural),
@@ -546,7 +579,7 @@ test "one plus one" {
 test "three times two" {
     var session: Swity = .init(std.testing.allocator);
     defer session.deinit();
-    session.addText(
+    session.addReplText(
         \\ data Natural {
         \\      "zero",
         \\      ("succ" Natural),
@@ -585,7 +618,7 @@ test "three times two" {
 test "main expression" {
     var session: Swity = .init(std.testing.allocator);
     defer session.deinit();
-    session.addText(
+    session.addReplText(
         \\ data Natural {
         \\      "zero",
         \\      ("succ" Natural),
@@ -614,6 +647,7 @@ test "main expression" {
 const Parser = struct {
     swity: *Swity,
     remaining_text: []const u8,
+    source_uri: []const u8,
     arena: std.mem.Allocator,
     result: std.mem.Allocator,
 
@@ -690,21 +724,20 @@ const Parser = struct {
 
     fn parseAll(self: *Parser) void {
         self.trimLeft();
-
-        if (self.maybeConsume("data")) {
+        if (self.remaining_text.len == 0) {
+            return;
+        } else if (self.maybeConsume("data")) {
             self.consumeWhitespace();
             const id: TypeId = self.consumeTypeId();
             self.trimLeft();
             const result: Type = self.consumeType();
             self.swity.known_types.putNoClobber(id, result) catch OoM();
-            self.parseAll();
         } else if (self.maybeConsume("fn")) {
             self.consumeWhitespace();
             const id: FuncId = self.consumeFuncId();
             self.trimLeft();
             const result: Func = self.consumeFunc();
             self.swity.known_funcs.putNoClobber(id, result) catch OoM();
-            self.parseAll();
         } else if (self.maybeConsume("main")) {
             assert(self.swity.main_expression == null);
             self.consumeWhitespace();
@@ -719,13 +752,24 @@ const Parser = struct {
                 .func_id = func_id,
                 .argument = argument,
             };
-            self.parseAll();
+        } else if (self.maybeConsume("include")) {
+            self.consumeWhitespace();
+            const filename = self.consumeSingleLiteral();
+            self.trimLeft();
+            self.consume(";");
+
+            self.swity.addIncludeFile(
+                std.fs.path.resolve(self.arena, &.{
+                    self.source_uri,
+                    "..",
+                    filename,
+                }) catch panic("TODO", .{}),
+            );
         } else {
-            if (self.remaining_text.len > 0) {
-                std.log.err("unexpected final text: {s}", .{self.remaining_text});
-                unreachable;
-            }
+            std.log.err("unexpected final text: {s}", .{self.remaining_text});
+            unreachable;
         }
+        self.parseAll();
     }
 
     fn nextIs(self: *Parser, token: []const u8) bool {
@@ -887,6 +931,12 @@ const Parser = struct {
         }
     }
 
+    fn consumeSingleLiteral(self: *Parser) []const u8 {
+        const result = self.consumeSingleWord();
+        assert(result.is_literal);
+        return result.result;
+    }
+
     fn consumeSingleWord(self: *Parser) struct { result: []const u8, is_literal: bool } {
         if (self.nextIs("\"")) {
             var next_index = std.mem.indexOfScalarPos(
@@ -982,6 +1032,7 @@ const Parser = struct {
 
         var parser: Parser = .{
             .swity = &process,
+            .source_uri = "REPL",
             .remaining_text = "",
             .arena = process.parsing_arena.allocator(),
             .result = process.permanent_arena.allocator(),
@@ -1026,7 +1077,7 @@ const Parser = struct {
         var process: Swity = .init(std.testing.allocator);
         defer process.deinit();
 
-        process.addText(
+        process.addReplText(
             \\ data Natural {
             \\      "zero",
             \\      ("succ" Natural),
@@ -1058,7 +1109,7 @@ const Parser = struct {
         var process: Swity = .init(std.testing.allocator);
         defer process.deinit();
 
-        process.addText(
+        process.addReplText(
             \\ fn mul: (Natural Natural) -> Natural {
             \\     ("zero" b) -> "zero";
             \\     (("succ" a) b) -> mul: (a b) {

@@ -1,5 +1,7 @@
 // 2024 aoc
 
+include "../stdlib/binary.swt";
+
 data Char {
     DecimalDigit,
     " ",

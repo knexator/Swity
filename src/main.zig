@@ -27,11 +27,11 @@ pub fn main() !void {
         var session: Swity = .init(gpa);
         defer session.deinit();
         while (args.next()) |arg| {
-            const source_code = try std.fs.cwd().readFileAlloc(gpa, arg, std.math.maxInt(usize));
-            defer gpa.free(source_code);
-            session.addText(source_code);
+            const path = try std.fs.cwd().realpathAlloc(gpa, arg);
+            defer gpa.free(path);
+            session.addIncludeFile(path);
         }
-        const result = session.executeMain();
+        const result = try session.executeMain();
         try stdout.print("{any}\n", .{result});
     } else {
         try stdout.print("Usage:\n\tswity run [files]\n\tswity lsp", .{});
