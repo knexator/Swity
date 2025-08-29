@@ -7,7 +7,6 @@ main_expression: ?struct {
     func_id: FuncId,
     argument: Value,
 } = null,
-files: std.StringArrayHashMap(bool),
 
 parsing_arena: std.heap.ArenaAllocator,
 per_execution_arena: std.heap.ArenaAllocator,
@@ -18,9 +17,85 @@ permanent_arena: std.heap.ArenaAllocator,
 // TODO: remove
 duplicated_source_arena: std.heap.ArenaAllocator,
 
+files_new: std.StringArrayHashMap(?[]CST),
+
+/// Concrete Syntax Tree
+const CST = struct {
+    tag: enum {
+        data_definition,
+        fn_definition,
+        main_definition,
+
+        // keyword_data,
+        // keyword_fn,
+        // keyword_main,
+
+        identifier,
+        literal,
+
+        data_oneof,
+        data_plex,
+    },
+    children: []CST,
+    span: struct {
+        uri: []const u8,
+        start: usize,
+        len: usize,
+    },
+    // pos: struct {
+    //     // uri: []const u8,
+    //     /// inclusive
+    //     start: Loc,
+    //     /// exclusive
+    //     end: Loc,
+    // },
+
+    pub const Loc = struct {
+        line: usize,
+        column: usize,
+
+        pub const zero: Loc = .{ .line = 0, .column = 0 };
+    };
+
+    pub fn containsIndex(self: CST, index: usize) bool {
+        return self.span.start <= index and index < self.span.start + self.span.len;
+    }
+
+    pub fn asString(self: CST, source: []const u8) []const u8 {
+        return switch (self.tag) {
+            .identifier => source[self.span.start..][0..self.span.len],
+            // removes the surrouding ""
+            .literal => source[self.span.start..][1 .. self.span.len - 1],
+            else => unreachable,
+        };
+    }
+
+    pub fn asType(self: CST, source: []const u8, mem: std.mem.Allocator) Type {
+        switch (self.tag) {
+            .identifier => return .{ .ref = self.asString(source) },
+            .literal => return .{ .literal = self.asString(source) },
+            .data_plex => {
+                const result: []Type = mem.alloc(Type, self.children.len) catch OoM();
+                for (result, self.children) |*dst, child| {
+                    dst.* = child.asType(source, mem);
+                }
+                return .{ .plex = result };
+            },
+            .data_oneof => {
+                const result: []Type = mem.alloc(Type, self.children.len) catch OoM();
+                for (result, self.children) |*dst, child| {
+                    dst.* = child.asType(source, mem);
+                }
+                return .{ .oneof = result };
+            },
+            else => unreachable,
+        }
+    }
+};
+
 pub fn init(gpa: std.mem.Allocator) Swity {
     return .{
-        .files = .init(gpa),
+        .files_new = .init(gpa),
         .known_types = .init(gpa),
         .known_funcs = .init(gpa),
         .duplicated_source_arena = .init(gpa),
@@ -31,7 +106,7 @@ pub fn init(gpa: std.mem.Allocator) Swity {
 }
 
 pub fn deinit(self: *Swity) void {
-    self.files.deinit();
+    self.files_new.deinit();
     self.known_types.deinit();
     self.known_funcs.deinit();
     self.parsing_arena.deinit();
@@ -40,24 +115,27 @@ pub fn deinit(self: *Swity) void {
     self.per_execution_arena.deinit();
 }
 
+pub fn addFileWithSource(self: *Swity, uri: []const u8, text: []const u8) void {
+    self.files_new.putNoClobber(uri, self.addText(uri, text)) catch OoM();
+}
+
 pub fn addIncludeFile(self: *Swity, uri: []const u8) void {
-    const kv = self.files.getOrPut(uri) catch OoM();
+    const kv = self.files_new.getOrPut(uri) catch OoM();
     if (kv.found_existing) {
         return;
     } else {
         kv.key_ptr.* = self.permanent_arena.allocator().dupe(u8, uri) catch OoM();
-        kv.value_ptr.* = false;
+        kv.value_ptr.* = null;
     }
 }
 
-fn addAllPendingTextRecursive(self: *Swity) !void {
-    var it = self.files.iterator();
+pub fn addAllPendingTextRecursive(self: *Swity) !void {
+    var it = self.files_new.iterator();
     while (it.next()) |kv| {
-        if (kv.value_ptr.* == false) {
-            kv.value_ptr.* = true;
+        if (kv.value_ptr.* == null) {
             const file = try std.fs.openFileAbsolute(kv.key_ptr.*, .{});
             const text = try file.readToEndAlloc(self.duplicated_source_arena.allocator(), std.math.maxInt(usize));
-            self.addText(kv.key_ptr.*, text);
+            kv.value_ptr.* = self.addText(kv.key_ptr.*, text);
             break;
         }
     } else return;
@@ -66,20 +144,36 @@ fn addAllPendingTextRecursive(self: *Swity) !void {
     try self.addAllPendingTextRecursive();
 }
 
-fn addText(self: *Swity, source_uri: []const u8, text: []const u8) void {
+fn addText(self: *Swity, source_uri: []const u8, text: []const u8) []CST {
     var parser: Parser = .{
         .swity = self,
         .source_uri = source_uri,
+        .original_text_len = text.len,
+        .top_level_results = .init(self.permanent_arena.allocator()),
         .remaining_text = text,
         .arena = self.parsing_arena.allocator(),
         .result = self.permanent_arena.allocator(),
     };
     parser.parseAll();
+    for (parser.top_level_results.items) |declaration| {
+        switch (declaration.tag) {
+            .data_definition => {
+                assert(declaration.children.len == 2);
+                const id = declaration.children[0].asString(text);
+                const body = declaration.children[1].asType(text, self.permanent_arena.allocator());
+                self.known_types.putNoClobber(id, body) catch OoM();
+            },
+            else => unreachable,
+        }
+    }
+
     _ = self.parsing_arena.reset(.retain_capacity);
+
+    return parser.top_level_results.toOwnedSlice() catch OoM();
 }
 
 fn addReplText(self: *Swity, text: []const u8) void {
-    self.addText("REPL", text);
+    _ = self.addText("REPL", text);
 }
 
 pub fn executeMain(self: *Swity) !Value {
@@ -644,12 +738,21 @@ test "main expression" {
     try std.testing.expectEqualDeep(expected, actual);
 }
 
+const SourceLocation = struct {
+    uri: []const u8,
+    line: usize,
+    column: usize,
+};
+
 const Parser = struct {
     swity: *Swity,
     remaining_text: []const u8,
     source_uri: []const u8,
     arena: std.mem.Allocator,
     result: std.mem.Allocator,
+    // cursor: CST.Loc,
+    original_text_len: usize,
+    top_level_results: std.ArrayList(CST),
 
     const RawSexpr = union(enum) {
         literal: []const u8,
@@ -722,16 +825,33 @@ const Parser = struct {
         }
     };
 
+    fn cursor(self: Parser) usize {
+        return self.original_text_len - self.remaining_text.len;
+    }
+
     fn parseAll(self: *Parser) void {
         self.trimLeft();
         if (self.remaining_text.len == 0) {
             return;
         } else if (self.maybeConsume("data")) {
+            const span_start = self.cursor() - "data".len;
             self.consumeWhitespace();
-            const id: TypeId = self.consumeTypeId();
+            const id: CST = self.consumeIdentifier();
             self.trimLeft();
-            const result: Type = self.consumeType();
-            self.swity.known_types.putNoClobber(id, result) catch OoM();
+            const body: CST = self.consumeTypeBody();
+            const span_end = self.cursor();
+            self.top_level_results.append(.{
+                .tag = .data_definition,
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+                .children = self.result.dupe(CST, &.{
+                    id,
+                    body,
+                }) catch OoM(),
+            }) catch OoM();
         } else if (self.maybeConsume("fn")) {
             self.consumeWhitespace();
             const id: FuncId = self.consumeFuncId();
@@ -798,6 +918,22 @@ const Parser = struct {
         return raw.asId();
     }
 
+    fn consumeIdentifier(self: *Parser) CST {
+        const span_start = self.cursor();
+        _ = self.consumeId();
+        const span_end = self.cursor();
+
+        return .{
+            .tag = .identifier,
+            .children = &.{},
+            .span = .{
+                .uri = self.source_uri,
+                .start = span_start,
+                .len = span_end - span_start,
+            },
+        };
+    }
+
     fn consumeValue(self: *Parser) Value {
         if (self.maybeConsume("<<EOF")) {
             _ = self.maybeConsume("\r");
@@ -826,6 +962,67 @@ const Parser = struct {
             const raw = self.consumeRawSexpr();
             return raw.asValue(self.result);
         }
+    }
+
+    fn consumeTypeBody(self: *Parser) CST {
+        if (self.maybeConsume("{")) {
+            const span_start = self.cursor() - 1;
+            var inner: std.ArrayList(CST) = .init(self.result);
+            self.trimLeft();
+            while (!self.maybeConsume("}")) {
+                const cur = self.consumeTypeBody();
+                inner.append(cur) catch OoM();
+                self.trimLeft();
+                self.consume(",");
+                self.trimLeft();
+            }
+            const span_end = self.cursor() - 1;
+            return .{
+                .tag = .data_oneof,
+                .children = inner.toOwnedSlice() catch OoM(),
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+            };
+        } else if (self.maybeConsume("(")) {
+            const span_start = self.cursor() - 1;
+            var inner: std.ArrayList(CST) = .init(self.result);
+            self.trimLeft();
+            while (!self.maybeConsume(")")) {
+                const cur = self.consumeTypeBody();
+                inner.append(cur) catch OoM();
+                self.trimLeft();
+            }
+            const span_end = self.cursor() - 1;
+            return .{
+                .tag = .data_plex,
+                .children = inner.toOwnedSlice() catch OoM(),
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+            };
+        } else {
+            return self.consumeIdentifierOrLiteral();
+        }
+    }
+
+    fn consumeIdentifierOrLiteral(self: *Parser) CST {
+        const span_start = self.cursor();
+        const is_literal = self.consumeSingleWord().is_literal;
+        const span_end = self.cursor();
+        return .{
+            .tag = if (is_literal) .literal else .identifier,
+            .children = &.{},
+            .span = .{
+                .uri = self.source_uri,
+                .start = span_start,
+                .len = span_end - span_start,
+            },
+        };
     }
 
     fn consumeType(self: *Parser) Type {
@@ -1031,9 +1228,11 @@ const Parser = struct {
         defer process.deinit();
 
         var parser: Parser = .{
+            .top_level_results = .init(process.permanent_arena.allocator()),
             .swity = &process,
             .source_uri = "REPL",
             .remaining_text = "",
+            .original_text_len = 0,
             .arena = process.parsing_arena.allocator(),
             .result = process.permanent_arena.allocator(),
         };

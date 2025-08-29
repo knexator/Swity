@@ -238,18 +238,52 @@ pub const Handler = struct {
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_definition
     pub fn @"textDocument/definition"(
         handler: *Handler,
-        _: std.mem.Allocator,
+        arena: std.mem.Allocator,
         params: lsp.types.DefinitionParams,
-    ) lsp.ResultType("textDocument/definition") {
+    ) !lsp.ResultType("textDocument/definition") {
         std.log.debug("Received 'textDocument/definition' request", .{});
+
+        // TODO: uri starts with 'file:///c%3A/Users/...'
 
         const source = handler.files.get(params.textDocument.uri) orelse {
             std.log.err("TODO: read file from fs", .{});
             return null;
         };
 
-        // const source_index = lsp.offsets.positionToIndex(source, params.position, handler.offset_encoding);
-        _ = source;
+        const source_index = lsp.offsets.positionToIndex(source, params.position, handler.offset_encoding);
+
+        // TODO: persistent session
+        var session: Swity = .init(arena);
+        {
+            var it = handler.files.iterator();
+            while (it.next()) |kv| {
+                session.addFileWithSource(kv.key_ptr.*, kv.value_ptr.*);
+            }
+            try session.addAllPendingTextRecursive();
+        }
+
+        std.log.debug("cursor is at {d}", .{source_index});
+        for (session.files_new.get(params.textDocument.uri).?.?) |declaration| {
+            std.log.debug("declaration range: {d}..{d}", .{
+                declaration.span.start,
+                declaration.span.start + declaration.span.len,
+            });
+            if (declaration.containsIndex(source_index)) {
+                const start_pos = lsp.offsets.indexToPosition(source, declaration.span.start, handler.offset_encoding);
+                const end_pos = lsp.offsets.indexToPosition(source, declaration.span.start + declaration.span.len, handler.offset_encoding);
+                return .{
+                    .Definition = .{
+                        .Location = .{
+                            .uri = params.textDocument.uri,
+                            .range = .{
+                                .start = start_pos,
+                                .end = end_pos,
+                            },
+                        },
+                    },
+                };
+            }
+        }
 
         return .{
             .Definition = .{
@@ -278,3 +312,5 @@ pub const Handler = struct {
 const std = @import("std");
 const assert = std.debug.assert;
 const lsp = @import("lsp");
+
+const Swity = @import("Swity.zig");

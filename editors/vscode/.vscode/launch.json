@@ -8,7 +8,7 @@
             "args": [
                 "--extensionDevelopmentPath=${workspaceFolder}"
             ],
-            "preLaunchTask": "Build Extension"
+            // "preLaunchTask": "Build Extension"
         }
     ]
 }

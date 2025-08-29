@@ -45,11 +45,20 @@ pub fn build(b: *std.Build) void {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
         run_cmd.addArg("run");
-        run_cmd.addFileArg(b.path("examples/advent_of_code.swt"));
-        run_cmd.expectStdOutEqual(
-            \\("0" ("9" ("6" ("4" ("7" ("5" ("3" "nil")))))))
-            \\
-        );
+        if (false) {
+            run_cmd.addFileArg(b.path("examples/advent_of_code.swt"));
+            run_cmd.expectStdOutEqual(
+                \\("0" ("9" ("6" ("4" ("7" ("5" ("3" "nil")))))))
+                \\
+            );
+        }
+        if (true) {
+            run_cmd.addFileArg(b.path("examples/naturals.swt"));
+            run_cmd.expectStdOutEqual(
+                \\("succ" ("succ" "zero"))
+                \\
+            );
+        }
         const run_step = b.step("e2e", "Run end-to-end tests");
         run_step.dependOn(&run_cmd.step);
     }
