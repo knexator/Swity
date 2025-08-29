@@ -1151,53 +1151,6 @@ const Parser = struct {
         };
     }
 
-    fn consumeType(self: *Parser) Type {
-        if (self.maybeConsume("{")) {
-            var inner: std.ArrayList(Type) = .init(self.result);
-            self.trimLeft();
-            while (!self.maybeConsume("}")) {
-                const cur = self.consumeType();
-                inner.append(cur) catch OoM();
-                self.trimLeft();
-                self.consume(",");
-                self.trimLeft();
-            }
-            return .{ .oneof = inner.toOwnedSlice() catch OoM() };
-        } else if (self.maybeConsume("(")) {
-            var inner: std.ArrayList(Type) = .init(self.result);
-            self.trimLeft();
-            while (!self.maybeConsume(")")) {
-                const cur = self.consumeType();
-                inner.append(cur) catch OoM();
-                self.trimLeft();
-            }
-            return .{ .plex = inner.toOwnedSlice() catch OoM() };
-        } else {
-            const cur = self.consumeSingleWord();
-            if (cur.is_literal) {
-                return .{ .literal = cur.result };
-            } else {
-                return .{ .ref = cur.result };
-            }
-        }
-    }
-
-    fn consumeFunc(self: *Parser) Func {
-        const type_in = self.consumeType();
-        self.trimLeft();
-        self.consume("->");
-        self.trimLeft();
-        const type_out = self.consumeType();
-        self.trimLeft();
-        const cases = self.consumeCases();
-
-        return .{
-            .type_in = type_in,
-            .type_out = type_out,
-            .cases = cases,
-        };
-    }
-
     fn consumeCasesNew(self: *Parser) CST {
         const span_start = self.cursor();
         var inner: std.ArrayList(CST) = .init(self.result);
@@ -1305,59 +1258,6 @@ const Parser = struct {
             };
         } else {
             return self.consumeIdentifierOrLiteral();
-        }
-    }
-
-    fn consumeCases(self: *Parser) []Func.Case {
-        var inner: std.ArrayList(Func.Case) = .init(self.result);
-        self.consume("{");
-        self.trimLeft();
-        while (!self.maybeConsume("}")) {
-            const cur = self.consumeCase();
-            inner.append(cur) catch OoM();
-            self.trimLeft();
-        }
-        return inner.toOwnedSlice() catch OoM();
-    }
-
-    fn consumeCase(self: *Parser) Func.Case {
-        const pattern = self.consumeRawSexpr().asTree(self.result);
-        self.trimLeft();
-        self.consume("->");
-        self.trimLeft();
-        const raw_template_or_funcid = self.consumeRawSexpr();
-        self.trimLeft();
-        const function_id: ?FuncId, const template: Tree = blk: {
-            if (self.nextIs("{") or self.nextIs(";")) {
-                break :blk .{ null, raw_template_or_funcid.asTree(self.result) };
-            } else {
-                self.consume(":");
-                self.trimLeft();
-                break :blk .{
-                    raw_template_or_funcid.asId(),
-                    self.consumeRawSexpr().asTree(self.result),
-                };
-            }
-        };
-        self.trimLeft();
-        if (self.maybeConsume(";")) {
-            return .{
-                .pattern = pattern,
-                .function_id = function_id,
-                .template = template,
-                .next = null,
-            };
-        } else {
-            return .{
-                .pattern = pattern,
-                .function_id = function_id,
-                .template = template,
-                .next = .{
-                    .cases = self.consumeCases(),
-                    .type_in = .unresolved,
-                    .type_out = .unresolved,
-                },
-            };
         }
     }
 
