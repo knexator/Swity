@@ -44,6 +44,13 @@ pub const CST = struct {
 
         data_oneof,
         data_plex,
+
+        // TODO: merge data_plex and fn_plex?
+        fn_plex,
+
+        fn_cases,
+        /// children: pattern, ?funcid, template, ?next_fn_cases
+        fn_case,
     },
     children: []CST,
     span: struct {
@@ -92,6 +99,69 @@ pub const CST = struct {
             },
             else => unreachable,
         }
+    }
+
+    pub fn asCases(self: CST, source: []const u8, mem: std.mem.Allocator) []Func.Case {
+        assert(self.tag == .fn_cases);
+        const result: []Func.Case = mem.alloc(Func.Case, self.children.len) catch OoM();
+        for (result, self.children) |*dst, case_cst| {
+            assert(case_cst.tag == .fn_case);
+            var case: Func.Case = undefined;
+            switch (case_cst.children.len) {
+                4 => {
+                    case.pattern = case_cst.children[0].asTree(source, mem);
+                    case.function_id = case_cst.children[1].asString(source);
+                    case.template = case_cst.children[2].asTree(source, mem);
+                    case.next = case_cst.children[3].asInnerFunc(source, mem);
+                },
+                2 => {
+                    case.pattern = case_cst.children[0].asTree(source, mem);
+                    case.function_id = null;
+                    case.template = case_cst.children[1].asTree(source, mem);
+                    case.next = null;
+                },
+                3 => {
+                    if (case_cst.children[2].tag == .fn_cases) {
+                        case.pattern = case_cst.children[0].asTree(source, mem);
+                        case.function_id = null;
+                        case.template = case_cst.children[1].asTree(source, mem);
+                        case.next = case_cst.children[2].asInnerFunc(source, mem);
+                    } else {
+                        case.pattern = case_cst.children[0].asTree(source, mem);
+                        case.function_id = case_cst.children[1].asString(source);
+                        case.template = case_cst.children[2].asTree(source, mem);
+                        case.next = null;
+                    }
+                },
+                else => unreachable,
+            }
+            dst.* = case;
+        }
+        return result;
+    }
+
+    pub fn asTree(self: *const CST, source: []const u8, mem: std.mem.Allocator) Tree {
+        switch (self.tag) {
+            .identifier => return .{ .variable = .{ .name = self.asString(source) } },
+            .literal => return .{ .literal = self.asString(source) },
+            .fn_plex => {
+                const result: []Tree = mem.alloc(Tree, self.children.len) catch OoM();
+                for (result, self.children) |*dst, child| {
+                    dst.* = child.asTree(source, mem);
+                }
+                return .{ .plex = result };
+            },
+            else => unreachable,
+        }
+    }
+
+    pub fn asInnerFunc(self: *const CST, source: []const u8, mem: std.mem.Allocator) Func {
+        return .{
+            .position = self,
+            .cases = self.asCases(source, mem),
+            .type_in = .unresolved,
+            .type_out = .unresolved,
+        };
     }
 
     pub fn nodesAt(gpa: std.mem.Allocator, nodes: []const CST, position: usize) ![]const CST {
@@ -182,7 +252,21 @@ fn addText(self: *Swity, source_uri: []const u8, text: []const u8) []CST {
                 const body = declaration.children[1].asType(text, self.permanent_arena.allocator());
                 self.known_types.putNoClobber(id, .{ .value = body, .position = declaration }) catch OoM();
             },
+            .fn_definition => {
+                assert(declaration.children.len == 4);
+                const id = declaration.children[0].asString(text);
+                const type_in = declaration.children[1].asType(text, self.permanent_arena.allocator());
+                const type_out = declaration.children[2].asType(text, self.permanent_arena.allocator());
+                const cases = declaration.children[3].asCases(text, self.permanent_arena.allocator());
+                self.known_funcs.putNoClobber(id, .{
+                    .type_in = type_in,
+                    .type_out = type_out,
+                    .cases = cases,
+                    .position = declaration,
+                }) catch OoM();
+            },
             else => unreachable,
+            // self.swity.known_funcs.putNoClobber(id, result) catch OoM();
         }
     }
 
@@ -872,11 +956,34 @@ const Parser = struct {
                 }) catch OoM(),
             }) catch OoM();
         } else if (self.maybeConsume("fn")) {
+            const span_start = self.cursor() - "fn".len;
             self.consumeWhitespace();
-            const id: FuncId = self.consumeFuncId();
+            const id: CST = self.consumeIdentifier();
             self.trimLeft();
-            const result: Func = self.consumeFunc();
-            self.swity.known_funcs.putNoClobber(id, result) catch OoM();
+            self.consume(":");
+            self.trimLeft();
+            const type_in = self.consumeTypeBody();
+            self.trimLeft();
+            self.consume("->");
+            self.trimLeft();
+            const type_out = self.consumeTypeBody();
+            self.trimLeft();
+            const cases = self.consumeCasesNew();
+            const span_end = self.cursor();
+            self.top_level_results.append(.{
+                .tag = .fn_definition,
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+                .children = self.result.dupe(CST, &.{
+                    id,
+                    type_in,
+                    type_out,
+                    cases,
+                }) catch OoM(),
+            }) catch OoM();
         } else if (self.maybeConsume("main")) {
             assert(self.swity.main_expression == null);
             self.consumeWhitespace();
@@ -995,7 +1102,7 @@ const Parser = struct {
                 self.consume(",");
                 self.trimLeft();
             }
-            const span_end = self.cursor() - 1;
+            const span_end = self.cursor();
             return .{
                 .tag = .data_oneof,
                 .children = inner.toOwnedSlice() catch OoM(),
@@ -1014,7 +1121,7 @@ const Parser = struct {
                 inner.append(cur) catch OoM();
                 self.trimLeft();
             }
-            const span_end = self.cursor() - 1;
+            const span_end = self.cursor();
             return .{
                 .tag = .data_plex,
                 .children = inner.toOwnedSlice() catch OoM(),
@@ -1076,9 +1183,6 @@ const Parser = struct {
     }
 
     fn consumeFunc(self: *Parser) Func {
-        self.consume(":");
-        self.trimLeft();
-
         const type_in = self.consumeType();
         self.trimLeft();
         self.consume("->");
@@ -1092,6 +1196,116 @@ const Parser = struct {
             .type_out = type_out,
             .cases = cases,
         };
+    }
+
+    fn consumeCasesNew(self: *Parser) CST {
+        const span_start = self.cursor();
+        var inner: std.ArrayList(CST) = .init(self.result);
+        self.consume("{");
+        self.trimLeft();
+        while (!self.maybeConsume("}")) {
+            const cur = self.consumeCaseNew();
+            inner.append(cur) catch OoM();
+            self.trimLeft();
+        }
+        const span_end = self.cursor();
+        return .{
+            .tag = .fn_cases,
+            .children = inner.toOwnedSlice() catch OoM(),
+            .span = .{
+                .uri = self.source_uri,
+                .start = span_start,
+                .len = span_end - span_start,
+            },
+        };
+    }
+
+    fn consumeCaseNew(self: *Parser) CST {
+        const span_start = self.cursor();
+        const pattern = self.consumeRawSexprNew();
+        self.trimLeft();
+        self.consume("->");
+        self.trimLeft();
+        const raw_template_or_funcid = self.consumeRawSexprNew();
+        self.trimLeft();
+        const function_id: ?CST, const template: CST = blk: {
+            if (self.nextIs("{") or self.nextIs(";")) {
+                break :blk .{ null, raw_template_or_funcid };
+            } else {
+                self.consume(":");
+                self.trimLeft();
+                break :blk .{
+                    raw_template_or_funcid,
+                    self.consumeRawSexprNew(),
+                };
+            }
+        };
+        self.trimLeft();
+        if (self.maybeConsume(";")) {
+            const span_end = self.cursor();
+            return .{
+                .tag = .fn_case,
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+                .children = self.result.dupe(CST, if (function_id) |f| &.{
+                    pattern,
+                    f,
+                    template,
+                } else &.{
+                    pattern,
+                    template,
+                }) catch OoM(),
+            };
+        } else {
+            const next_cases = self.consumeCasesNew();
+            const span_end = self.cursor();
+            return .{
+                .tag = .fn_case,
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+                .children = self.result.dupe(CST, if (function_id) |f| &.{
+                    pattern,
+                    f,
+                    template,
+                    next_cases,
+                } else &.{
+                    pattern,
+                    template,
+                    next_cases,
+                }) catch OoM(),
+            };
+        }
+    }
+
+    fn consumeRawSexprNew(self: *Parser) CST {
+        if (self.maybeConsume("(")) {
+            const span_start = self.cursor() - 1;
+            var inner: std.ArrayList(CST) = .init(self.result);
+            self.trimLeft();
+            while (!self.maybeConsume(")")) {
+                const cur = self.consumeRawSexprNew();
+                inner.append(cur) catch OoM();
+                self.trimLeft();
+            }
+            const span_end = self.cursor();
+            return .{
+                .tag = .fn_plex,
+                .children = inner.toOwnedSlice() catch OoM(),
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+            };
+        } else {
+            return self.consumeIdentifierOrLiteral();
+        }
     }
 
     fn consumeCases(self: *Parser) []Func.Case {
@@ -1324,6 +1538,25 @@ const Parser = struct {
     }
 
     test "parse func" {
+        const S = struct {
+            pub fn expectEqualFuncs(expected: Func, actual: Func) error{TestExpectedEqual}!void {
+                try std.testing.expectEqualDeep(expected.type_in, actual.type_in);
+                try std.testing.expectEqualDeep(expected.type_out, actual.type_out);
+                try std.testing.expectEqual(expected.cases.len, actual.cases.len);
+                for (expected.cases, actual.cases) |e, a| {
+                    try std.testing.expectEqualDeep(e.function_id, a.function_id);
+                    try std.testing.expectEqualDeep(e.pattern, a.pattern);
+                    try std.testing.expectEqualDeep(e.template, a.template);
+                    if (e.next) |e_next| {
+                        std.testing.expect(a.next != null) catch return error.TestExpectedEqual;
+                        try expectEqualFuncs(e_next, a.next.?);
+                    } else {
+                        std.testing.expect(a.next == null) catch return error.TestExpectedEqual;
+                    }
+                }
+            }
+        };
+
         var process: Swity = .init(std.testing.allocator);
         defer process.deinit();
 
@@ -1337,6 +1570,7 @@ const Parser = struct {
         );
 
         const expected: Func = .{
+            .position = undefined,
             .type_in = .{ .plex = &.{
                 .{ .ref = "Natural" },
                 .{ .ref = "Natural" },
@@ -1375,14 +1609,14 @@ const Parser = struct {
                             }) },
                             .next = null,
                         },
-                    }), .type_in = .unresolved, .type_out = .unresolved },
+                    }), .type_in = .unresolved, .type_out = .unresolved, .position = undefined },
                 },
             }),
         };
 
         const actual = process.known_funcs.get("mul") orelse return error.TestUnexpectedResult;
 
-        try std.testing.expectEqualDeep(expected, actual);
+        try S.expectEqualFuncs(expected, actual);
     }
 };
 
@@ -1501,6 +1735,8 @@ pub const Func = struct {
 
     // TODO: should be undefined
     stack_used_by_self_and_next: usize = std.math.maxInt(usize),
+
+    position: *const CST,
 
     pub const Case = struct {
         pattern: Tree,
