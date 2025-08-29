@@ -1,6 +1,15 @@
 const Swity = @This();
 
-const KnownTypes = if (TypeId == []const u8) std.StringHashMap(Type) else std.AutoHashMap(TypeId, Type);
+const TypeDeclaration = struct {
+    value: Type,
+    position: *const CST,
+};
+
+const KnownTypes = if (TypeId == []const u8)
+    std.StringHashMap(TypeDeclaration)
+else
+    std.AutoHashMap(TypeId, TypeDeclaration);
+
 known_types: KnownTypes,
 known_funcs: if (FuncId == []const u8) std.StringHashMap(Func) else std.AutoHashMap(FuncId, Func),
 main_expression: ?struct {
@@ -20,7 +29,7 @@ duplicated_source_arena: std.heap.ArenaAllocator,
 files_new: std.StringArrayHashMap(?[]CST),
 
 /// Concrete Syntax Tree
-const CST = struct {
+pub const CST = struct {
     tag: enum {
         data_definition,
         fn_definition,
@@ -41,14 +50,11 @@ const CST = struct {
         uri: []const u8,
         start: usize,
         len: usize,
+
+        pub fn containsIndex(self: @This(), index: usize) bool {
+            return self.start <= index and index < self.start + self.len;
+        }
     },
-    // pos: struct {
-    //     // uri: []const u8,
-    //     /// inclusive
-    //     start: Loc,
-    //     /// exclusive
-    //     end: Loc,
-    // },
 
     pub const Loc = struct {
         line: usize,
@@ -57,14 +63,10 @@ const CST = struct {
         pub const zero: Loc = .{ .line = 0, .column = 0 };
     };
 
-    pub fn containsIndex(self: CST, index: usize) bool {
-        return self.span.start <= index and index < self.span.start + self.span.len;
-    }
-
     pub fn asString(self: CST, source: []const u8) []const u8 {
         return switch (self.tag) {
             .identifier => source[self.span.start..][0..self.span.len],
-            // removes the surrouding ""
+            // removes the surrouding quotes
             .literal => source[self.span.start..][1 .. self.span.len - 1],
             else => unreachable,
         };
@@ -90,6 +92,23 @@ const CST = struct {
             },
             else => unreachable,
         }
+    }
+
+    pub fn nodesAt(gpa: std.mem.Allocator, nodes: []const CST, position: usize) ![]const CST {
+        var result: std.ArrayList(CST) = .init(gpa);
+
+        var cur = nodes;
+        while (true) {
+            for (cur) |node| {
+                if (node.span.containsIndex(position)) {
+                    try result.append(node);
+                    cur = node.children;
+                    break;
+                }
+            } else break;
+        }
+
+        return try result.toOwnedSlice();
     }
 };
 
@@ -155,13 +174,13 @@ fn addText(self: *Swity, source_uri: []const u8, text: []const u8) []CST {
         .result = self.permanent_arena.allocator(),
     };
     parser.parseAll();
-    for (parser.top_level_results.items) |declaration| {
+    for (parser.top_level_results.items) |*declaration| {
         switch (declaration.tag) {
             .data_definition => {
                 assert(declaration.children.len == 2);
                 const id = declaration.children[0].asString(text);
                 const body = declaration.children[1].asType(text, self.permanent_arena.allocator());
-                self.known_types.putNoClobber(id, body) catch OoM();
+                self.known_types.putNoClobber(id, .{ .value = body, .position = declaration }) catch OoM();
             },
             else => unreachable,
         }
@@ -401,7 +420,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
                 },
                 .plex => |pat_p| switch (@"type") {
                     else => return false,
-                    .ref => |r| return bindTypes(swity, known, pattern, swity.known_types.get(r).?),
+                    .ref => |r| return bindTypes(swity, known, pattern, swity.known_types.get(r).?.value),
                     .oneof => |options| {
                         for (options) |o| {
                             var new_known = known.clone() catch OoM();
@@ -473,20 +492,20 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     .unresolved => unreachable,
                     .literal => |l_general| return std.mem.eql(u8, l_specific, l_general),
                     .plex => return false,
-                    .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?),
+                    .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?.value),
                     .oneof => |options| for (options) |o| {
                         if (isSubtypeHelper(known_types, assumptions, specific, o)) return true;
                     } else return false,
                 },
                 .ref => |r| switch (general) {
-                    else => return isSubtypeHelper(known_types, assumptions, known_types.get(r).?, general),
+                    else => return isSubtypeHelper(known_types, assumptions, known_types.get(r).?.value, general),
                     .ref => |rg| {
                         if (std.mem.eql(u8, r, rg))
                             return true
                         else {
                             if (assumptions.get(.{ .child = r, .parent = rg }) == null) {
                                 assumptions.put(.{ .child = r, .parent = rg }, {}) catch OoM();
-                                return isSubtypeHelper(known_types, assumptions, specific, known_types.get(rg).?);
+                                return isSubtypeHelper(known_types, assumptions, specific, known_types.get(rg).?.value);
                             } else return true;
                         }
                     },
@@ -497,7 +516,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
                 .plex => |specific_parts| switch (general) {
                     .unresolved => unreachable,
                     .literal => return false,
-                    .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?),
+                    .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?.value),
                     .oneof => |options| for (options) |o| {
                         if (isSubtypeHelper(known_types, assumptions, specific, o)) return true;
                     } else return false,
@@ -536,7 +555,7 @@ pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
         // .unresolved => unreachable,
         .unresolved => return true,
         .literal => |l| return value.isTheLiteral(l),
-        .ref => |r| return self.validValueForType(self.known_types.get(r) orelse panic("unknown type {s}", .{r}), value),
+        .ref => |r| return self.validValueForType((self.known_types.get(r) orelse panic("unknown type {s}", .{r})).value, value),
         .oneof => |options| for (options) |o| {
             if (self.validValueForType(o, value)) return true;
         } else return false,
@@ -1299,7 +1318,7 @@ const Parser = struct {
             } },
         } };
 
-        const actual = process.known_types.get("Natural") orelse return error.TestUnexpectedResult;
+        const actual = (process.known_types.get("Natural") orelse return error.TestUnexpectedResult).value;
 
         try std.testing.expectEqualDeep(expected, actual);
     }

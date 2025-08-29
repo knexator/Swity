@@ -263,39 +263,36 @@ pub const Handler = struct {
         }
 
         std.log.debug("cursor is at {d}", .{source_index});
-        for (session.files_new.get(params.textDocument.uri).?.?) |declaration| {
-            std.log.debug("declaration range: {d}..{d}", .{
-                declaration.span.start,
-                declaration.span.start + declaration.span.len,
-            });
-            if (declaration.containsIndex(source_index)) {
-                const start_pos = lsp.offsets.indexToPosition(source, declaration.span.start, handler.offset_encoding);
-                const end_pos = lsp.offsets.indexToPosition(source, declaration.span.start + declaration.span.len, handler.offset_encoding);
-                return .{
-                    .Definition = .{
-                        .Location = .{
-                            .uri = params.textDocument.uri,
-                            .range = .{
-                                .start = start_pos,
-                                .end = end_pos,
+        const nodes_under_cursor = try Swity.CST.nodesAt(arena, session.files_new.get(params.textDocument.uri).?.?, source_index);
+
+        if (nodes_under_cursor.len == 0) {
+            return null;
+        } else {
+            const last = nodes_under_cursor[nodes_under_cursor.len - 1];
+            switch (last.tag) {
+                else => return null,
+                .identifier => {
+                    const id = last.asString(source);
+
+                    if (session.known_types.get(id)) |declaration| {
+                        const span = declaration.position.children[0].span;
+                        const start_pos = lsp.offsets.indexToPosition(source, span.start, handler.offset_encoding);
+                        const end_pos = lsp.offsets.indexToPosition(source, span.start + span.len, handler.offset_encoding);
+                        return .{
+                            .Definition = .{
+                                .Location = .{
+                                    .uri = params.textDocument.uri,
+                                    .range = .{
+                                        .start = start_pos,
+                                        .end = end_pos,
+                                    },
+                                },
                             },
-                        },
-                    },
-                };
+                        };
+                    } else return null;
+                },
             }
         }
-
-        return .{
-            .Definition = .{
-                .Location = .{
-                    .uri = params.textDocument.uri,
-                    .range = .{
-                        .start = .{ .line = 0, .character = 0 },
-                        .end = .{ .line = 1, .character = 0 },
-                    },
-                },
-            },
-        };
     }
 
     /// We received a response message from the client/editor.
