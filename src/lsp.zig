@@ -212,9 +212,9 @@ pub const Handler = struct {
     /// This function can be omitted if you are not interested in this request. A `null` response will be automatically send back.
     pub fn @"textDocument/hover"(
         handler: *Handler,
-        _: std.mem.Allocator,
+        arena: std.mem.Allocator,
         params: lsp.types.HoverParams,
-    ) ?lsp.types.Hover {
+    ) !?lsp.types.Hover {
         std.log.debug("Received 'textDocument/hover' request", .{});
 
         const source = handler.files.get(params.textDocument.uri) orelse {
@@ -223,7 +223,57 @@ pub const Handler = struct {
         };
 
         const source_index = lsp.offsets.positionToIndex(source, params.position, handler.offset_encoding);
-        std.log.debug("Hover position: line={d}, character={d}, index={d}", .{ params.position.line, params.position.character, source_index });
+
+        // TODO: persistent session
+        var session: Swity = .init(arena);
+        {
+            var it = handler.files.iterator();
+            while (it.next()) |kv| {
+                session.addFileWithSource(kv.key_ptr.*, kv.value_ptr.*);
+            }
+            try session.addAllPendingTextRecursive();
+        }
+
+        const nodes_under_cursor = try Swity.CST.nodesAt(arena, session.files_new.get(params.textDocument.uri).?.?, source_index);
+
+        if (nodes_under_cursor.len == 0) {
+            return null;
+        } else {
+            const last = nodes_under_cursor[nodes_under_cursor.len - 1];
+            switch (last.tag) {
+                else => return null,
+                .identifier => {
+                    const id = last.asString(source);
+
+                    if (session.known_types.get(id)) |declaration| {
+                        return .{
+                            .contents = .{
+                                .MarkupContent = .{
+                                    .kind = .markdown,
+                                    .value = try std.fmt.allocPrint(arena, "```swt\n{s}\n```", .{
+                                        declaration.position.asSourceCodeString(handler.files.get(declaration.position.span.uri) orelse return null),
+                                    }),
+                                },
+                            },
+                        };
+                    } else if (session.known_funcs.get(id)) |declaration| {
+                        const decl_source = handler.files.get(declaration.position.span.uri) orelse return null;
+                        return .{
+                            .contents = .{
+                                .MarkupContent = .{
+                                    .kind = .markdown,
+                                    .value = try std.fmt.allocPrint(arena, "```swt\nfn {s}: {s} -> {s}\n```", .{
+                                        declaration.position.children[0].asSourceCodeString(decl_source),
+                                        declaration.position.children[1].asSourceCodeString(decl_source),
+                                        declaration.position.children[2].asSourceCodeString(decl_source),
+                                    }),
+                                },
+                            },
+                        };
+                    } else return null;
+                },
+            }
+        }
 
         return .{
             .contents = .{
@@ -262,7 +312,6 @@ pub const Handler = struct {
             try session.addAllPendingTextRecursive();
         }
 
-        std.log.debug("cursor is at {d}", .{source_index});
         const nodes_under_cursor = try Swity.CST.nodesAt(arena, session.files_new.get(params.textDocument.uri).?.?, source_index);
 
         if (nodes_under_cursor.len == 0) {
@@ -274,8 +323,14 @@ pub const Handler = struct {
                 .identifier => {
                     const id = last.asString(source);
 
-                    if (session.known_types.get(id)) |declaration| {
-                        const span = declaration.position.children[0].span;
+                    const source_span = if (session.known_types.get(id)) |declaration|
+                        declaration.position.children[0].span
+                    else if (session.known_funcs.get(id)) |declaration|
+                        declaration.position.children[0].span
+                    else
+                        null;
+
+                    if (source_span) |span| {
                         const start_pos = lsp.offsets.indexToPosition(source, span.start, handler.offset_encoding);
                         const end_pos = lsp.offsets.indexToPosition(source, span.start + span.len, handler.offset_encoding);
                         return .{

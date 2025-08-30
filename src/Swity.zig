@@ -70,6 +70,10 @@ pub const CST = struct {
         pub const zero: Loc = .{ .line = 0, .column = 0 };
     };
 
+    pub fn asSourceCodeString(self: CST, source: []const u8) []const u8 {
+        return source[self.span.start..][0..self.span.len];
+    }
+
     pub fn asString(self: CST, source: []const u8) []const u8 {
         return switch (self.tag) {
             .identifier => source[self.span.start..][0..self.span.len],
