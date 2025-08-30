@@ -17,6 +17,9 @@ main_expression: ?struct {
     argument: Value,
 } = null,
 
+// TODO
+// gpa: std.mem.Allocator,
+
 parsing_arena: std.heap.ArenaAllocator,
 per_execution_arena: std.heap.ArenaAllocator,
 
@@ -26,7 +29,78 @@ permanent_arena: std.heap.ArenaAllocator,
 // TODO: remove
 duplicated_source_arena: std.heap.ArenaAllocator,
 
-files_new: std.StringArrayHashMap(?[]CST),
+// TODO: rename
+// TODO: should not be nullable
+/// keys are absolute paths
+files_new: std.StringArrayHashMap(?ParsedSource),
+
+pub const ParsedSource = struct {
+    // TODO
+    // arena: std.heap.ArenaAllocator,
+    // TODO: per-file arena/pool for CST nodes (and source?)
+    decls: []CST,
+    // TODO: clarify ownership
+    source: []const u8,
+
+    pub fn fromText(swity: *Swity, path: []const u8, text: []const u8) ParsedSource {
+        var parser: Parser = .{
+            .swity = swity,
+            .source_uri = path,
+            .original_text_len = text.len,
+            .top_level_results = .init(swity.permanent_arena.allocator()),
+            .remaining_text = text,
+            .arena = swity.parsing_arena.allocator(),
+            .result = swity.permanent_arena.allocator(),
+        };
+        parser.parseAll();
+
+        // TODO: move somewhere else
+        // TODO: add text recursive
+        for (parser.top_level_results.items) |*declaration| {
+            switch (declaration.tag) {
+                .data_definition => {
+                    assert(declaration.children.len == 2);
+                    const id = declaration.children[0].asString(text);
+                    const body = declaration.children[1].asType(text, swity.permanent_arena.allocator());
+                    swity.known_types.putNoClobber(id, .{ .value = body, .position = declaration }) catch OoM();
+                },
+                .fn_definition => {
+                    assert(declaration.children.len == 4);
+                    const id = declaration.children[0].asString(text);
+                    const type_in = declaration.children[1].asType(text, swity.permanent_arena.allocator());
+                    const type_out = declaration.children[2].asType(text, swity.permanent_arena.allocator());
+                    const cases = declaration.children[3].asCases(text, swity.permanent_arena.allocator());
+                    swity.known_funcs.putNoClobber(id, .{
+                        .type_in = type_in,
+                        .type_out = type_out,
+                        .cases = cases,
+                        .position = declaration,
+                    }) catch OoM();
+                },
+                else => unreachable,
+                // self.swity.known_funcs.putNoClobber(id, result) catch OoM();
+            }
+        }
+
+        // TODO
+        // _ = self.parsing_arena.reset(.retain_capacity);
+
+        return .{
+            .source = text,
+            .decls = parser.top_level_results.toOwnedSlice() catch OoM(),
+        };
+    }
+
+    // pub fn fromFs(gpa: std.mem.Allocator, path: []const u8) ParsedSource {
+    pub fn fromFs(swity: *Swity, path: []const u8) !ParsedSource {
+        // var arena: std.heap.ArenaAllocator = .init(gpa);
+        const file = try std.fs.openFileAbsolute(path, .{});
+        // const text = try file.readToEndAlloc(arena.allocator(), std.math.maxInt(usize));
+        const text = try file.readToEndAlloc(swity.duplicated_source_arena.allocator(), std.math.maxInt(usize));
+
+        return .fromText(swity, path, text);
+    }
+};
 
 /// Concrete Syntax Tree
 pub const CST = struct {
@@ -199,6 +273,7 @@ pub fn init(gpa: std.mem.Allocator) Swity {
 }
 
 pub fn deinit(self: *Swity) void {
+    // TODO: deinit each file's contents
     self.files_new.deinit();
     self.known_types.deinit();
     self.known_funcs.deinit();
@@ -208,16 +283,26 @@ pub fn deinit(self: *Swity) void {
     self.per_execution_arena.deinit();
 }
 
-pub fn addFileWithSource(self: *Swity, uri: []const u8, text: []const u8) void {
-    self.files_new.putNoClobber(uri, self.addText(uri, text)) catch OoM();
+// TODO: setFileSource
+pub fn addFileWithSource(self: *Swity, path: []const u8, text: []const u8) void {
+    self.files_new.putNoClobber(path, .fromText(self, path, text)) catch OoM();
 }
 
-pub fn addIncludeFile(self: *Swity, uri: []const u8) void {
-    const kv = self.files_new.getOrPut(uri) catch OoM();
+pub fn removeFile(self: *Swity, path: []const u8) void {
+    assert(self.files_new.swapRemove(path));
+
+    self.known_funcs.clearRetainingCapacity();
+    self.known_types.clearRetainingCapacity();
+    self.main_expression = null;
+    // TODO: reparse
+}
+
+pub fn addIncludeFile(self: *Swity, path: []const u8) void {
+    const kv = self.files_new.getOrPut(path) catch OoM();
     if (kv.found_existing) {
         return;
     } else {
-        kv.key_ptr.* = self.permanent_arena.allocator().dupe(u8, uri) catch OoM();
+        kv.key_ptr.* = self.permanent_arena.allocator().dupe(u8, path) catch OoM();
         kv.value_ptr.* = null;
     }
 }
@@ -226,9 +311,7 @@ pub fn addAllPendingTextRecursive(self: *Swity) !void {
     var it = self.files_new.iterator();
     while (it.next()) |kv| {
         if (kv.value_ptr.* == null) {
-            const file = try std.fs.openFileAbsolute(kv.key_ptr.*, .{});
-            const text = try file.readToEndAlloc(self.duplicated_source_arena.allocator(), std.math.maxInt(usize));
-            kv.value_ptr.* = self.addText(kv.key_ptr.*, text);
+            kv.value_ptr.* = try .fromFs(self, kv.key_ptr.*);
             break;
         }
     } else return;
@@ -237,50 +320,8 @@ pub fn addAllPendingTextRecursive(self: *Swity) !void {
     try self.addAllPendingTextRecursive();
 }
 
-fn addText(self: *Swity, source_uri: []const u8, text: []const u8) []CST {
-    var parser: Parser = .{
-        .swity = self,
-        .source_uri = source_uri,
-        .original_text_len = text.len,
-        .top_level_results = .init(self.permanent_arena.allocator()),
-        .remaining_text = text,
-        .arena = self.parsing_arena.allocator(),
-        .result = self.permanent_arena.allocator(),
-    };
-    parser.parseAll();
-    for (parser.top_level_results.items) |*declaration| {
-        switch (declaration.tag) {
-            .data_definition => {
-                assert(declaration.children.len == 2);
-                const id = declaration.children[0].asString(text);
-                const body = declaration.children[1].asType(text, self.permanent_arena.allocator());
-                self.known_types.putNoClobber(id, .{ .value = body, .position = declaration }) catch OoM();
-            },
-            .fn_definition => {
-                assert(declaration.children.len == 4);
-                const id = declaration.children[0].asString(text);
-                const type_in = declaration.children[1].asType(text, self.permanent_arena.allocator());
-                const type_out = declaration.children[2].asType(text, self.permanent_arena.allocator());
-                const cases = declaration.children[3].asCases(text, self.permanent_arena.allocator());
-                self.known_funcs.putNoClobber(id, .{
-                    .type_in = type_in,
-                    .type_out = type_out,
-                    .cases = cases,
-                    .position = declaration,
-                }) catch OoM();
-            },
-            else => unreachable,
-            // self.swity.known_funcs.putNoClobber(id, result) catch OoM();
-        }
-    }
-
-    _ = self.parsing_arena.reset(.retain_capacity);
-
-    return parser.top_level_results.toOwnedSlice() catch OoM();
-}
-
 fn addReplText(self: *Swity, text: []const u8) void {
-    _ = self.addText("REPL", text);
+    self.files_new.putNoClobber("REPL", .fromText(self, "REPL", text)) catch OoM();
 }
 
 pub fn executeMain(self: *Swity) !Value {
@@ -854,6 +895,7 @@ const SourceLocation = struct {
 const Parser = struct {
     swity: *Swity,
     remaining_text: []const u8,
+    // TODO: rename to path
     source_uri: []const u8,
     arena: std.mem.Allocator,
     result: std.mem.Allocator,
@@ -989,7 +1031,8 @@ const Parser = struct {
                 }) catch OoM(),
             }) catch OoM();
         } else if (self.maybeConsume("main")) {
-            assert(self.swity.main_expression == null);
+            // TODO
+            // assert(self.swity.main_expression == null);
             self.consumeWhitespace();
             const func_id: FuncId = self.consumeFuncId();
             self.trimLeft();

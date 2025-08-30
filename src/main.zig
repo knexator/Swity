@@ -22,7 +22,7 @@ pub fn main() !void {
     const mode = args.next() orelse "help";
 
     if (std.mem.eql(u8, mode, "lsp")) {
-        try @import("lsp.zig").run(gpa);
+        try lsp.run(gpa);
     } else if (std.mem.eql(u8, mode, "run")) {
         var session: Swity = .init(gpa);
         defer session.deinit();
@@ -42,9 +42,11 @@ pub fn main() !void {
 
 comptime {
     std.testing.refAllDecls(Swity);
+    std.testing.refAllDecls(lsp);
 }
 
 const std = @import("std");
 const assert = std.debug.assert;
 
 const Swity = @import("Swity.zig");
+const lsp = @import("lsp.zig");

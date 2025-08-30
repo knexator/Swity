@@ -14,7 +14,7 @@ pub fn run(gpa: std.mem.Allocator) !void {
 
 pub const Handler = struct {
     allocator: std.mem.Allocator,
-    files: std.StringHashMapUnmanaged([]u8),
+    session: Swity,
     /// The LSP protocol specifies position inside a text document using a line and character pair.
     /// This field stores which encoding is used for the character value (UTF-8, UTF-16, UTF-32).
     ///
@@ -24,7 +24,7 @@ pub const Handler = struct {
     fn init(allocator: std.mem.Allocator) Handler {
         return .{
             .allocator = allocator,
-            .files = .{},
+            .session = .init(allocator),
             // The default position encoding is UTF-16.
             // The agreed upon encoding between server client is actually decided during `initialize`.
             .offset_encoding = .@"utf-16",
@@ -32,15 +32,19 @@ pub const Handler = struct {
     }
 
     fn deinit(handler: *Handler) void {
-        var file_it = handler.files.iterator();
-        while (file_it.next()) |entry| {
-            handler.allocator.free(entry.key_ptr.*);
-            handler.allocator.free(entry.value_ptr.*);
-        }
-
-        handler.files.deinit(handler.allocator);
-
+        handler.session.deinit();
         handler.* = undefined;
+
+        // TODO
+        // var file_it = handler.files.iterator();
+        // while (file_it.next()) |entry| {
+        //     handler.allocator.free(entry.key_ptr.*);
+        //     handler.allocator.free(entry.value_ptr.*);
+        // }
+
+        // handler.files.deinit(handler.allocator);
+
+        // handler.* = undefined;
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#initialize
@@ -81,6 +85,7 @@ pub const Handler = struct {
             .textDocumentSync = .{
                 .TextDocumentSyncOptions = .{
                     .openClose = true,
+                    // TODO: change to Incremental
                     .change = .Full,
                 },
             },
@@ -95,7 +100,7 @@ pub const Handler = struct {
 
         return .{
             .serverInfo = .{
-                .name = "My first LSP",
+                .name = "Swity LSP",
                 .version = "0.1.0",
             },
             .capabilities = server_capabilities,
@@ -134,7 +139,7 @@ pub const Handler = struct {
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_didOpen
     pub fn @"textDocument/didOpen"(
         self: *Handler,
-        _: std.mem.Allocator,
+        arena: std.mem.Allocator,
         notification: lsp.types.DidOpenTextDocumentParams,
     ) !void {
         std.log.debug("Received 'textDocument/didOpen' notification", .{});
@@ -142,36 +147,28 @@ pub const Handler = struct {
         const new_text = try self.allocator.dupe(u8, notification.textDocument.text);
         errdefer self.allocator.free(new_text);
 
-        const gop = try self.files.getOrPut(self.allocator, notification.textDocument.uri);
-
-        if (gop.found_existing) {
-            std.log.warn("Document opened twice: '{s}'", .{notification.textDocument.uri});
-            self.allocator.free(gop.value_ptr.*);
-        } else {
-            errdefer std.debug.assert(self.files.remove(notification.textDocument.uri));
-            gop.key_ptr.* = try self.allocator.dupe(u8, notification.textDocument.uri);
-        }
-
-        gop.value_ptr.* = new_text;
+        self.session.addFileWithSource(try pathFromUri(notification.textDocument.uri, arena), new_text);
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_didChange
     pub fn @"textDocument/didChange"(
         self: *Handler,
-        _: std.mem.Allocator,
+        arena: std.mem.Allocator,
         notification: lsp.types.DidChangeTextDocumentParams,
     ) !void {
         std.log.debug("Received 'textDocument/didChange' notification", .{});
 
-        const current_text = self.files.getPtr(notification.textDocument.uri) orelse {
+        const path = try pathFromUri(notification.textDocument.uri, arena);
+
+        const current_text = (self.session.files_new.get(path) orelse {
             std.log.warn("Modifying non existent Document: '{s}'", .{notification.textDocument.uri});
             return;
-        };
+        }).?.source;
 
         var buffer: std.ArrayListUnmanaged(u8) = .empty;
         errdefer buffer.deinit(self.allocator);
 
-        try buffer.appendSlice(self.allocator, current_text.*);
+        try buffer.appendSlice(self.allocator, current_text);
 
         for (notification.contentChanges) |content_change| {
             switch (content_change) {
@@ -187,29 +184,28 @@ pub const Handler = struct {
         }
 
         const new_text = try buffer.toOwnedSlice(self.allocator);
-        self.allocator.free(current_text.*);
-        current_text.* = new_text;
+
+        self.session.removeFile(path);
+        self.session.addFileWithSource(path, new_text);
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_didClose
     pub fn @"textDocument/didClose"(
         self: *Handler,
-        _: std.mem.Allocator,
+        arena: std.mem.Allocator,
         notification: lsp.types.DidCloseTextDocumentParams,
     ) !void {
         std.log.debug("Received 'textDocument/didClose' notification", .{});
 
-        const entry = self.files.fetchRemove(notification.textDocument.uri) orelse {
-            std.log.warn("Closing non existent Document: '{s}'", .{notification.textDocument.uri});
-            return;
-        };
-        self.allocator.free(entry.key);
-        self.allocator.free(entry.value);
+        const path = try pathFromUri(notification.textDocument.uri, arena);
+        self.session.removeFile(path);
+    }
+
+    fn sourceFor(handler: *Handler, path: []const u8) ?[]const u8 {
+        return (handler.session.files_new.get(path) orelse return null).?.source;
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_hover
-    ///
-    /// This function can be omitted if you are not interested in this request. A `null` response will be automatically send back.
     pub fn @"textDocument/hover"(
         handler: *Handler,
         arena: std.mem.Allocator,
@@ -217,24 +213,16 @@ pub const Handler = struct {
     ) !?lsp.types.Hover {
         std.log.debug("Received 'textDocument/hover' request", .{});
 
-        const source = handler.files.get(params.textDocument.uri) orelse {
-            std.log.err("TODO: read file from fs", .{});
+        const path = try pathFromUri(params.textDocument.uri, arena);
+
+        const asdf: Swity.ParsedSource = (handler.session.files_new.get(path) orelse {
+            std.log.warn("Can't act on unknown Document: '{s}'", .{params.textDocument.uri});
             return null;
-        };
+        }).?;
 
-        const source_index = lsp.offsets.positionToIndex(source, params.position, handler.offset_encoding);
+        const source_index = lsp.offsets.positionToIndex(asdf.source, params.position, handler.offset_encoding);
 
-        // TODO: persistent session
-        var session: Swity = .init(arena);
-        {
-            var it = handler.files.iterator();
-            while (it.next()) |kv| {
-                session.addFileWithSource(kv.key_ptr.*, kv.value_ptr.*);
-            }
-            try session.addAllPendingTextRecursive();
-        }
-
-        const nodes_under_cursor = try Swity.CST.nodesAt(arena, session.files_new.get(params.textDocument.uri).?.?, source_index);
+        const nodes_under_cursor = try Swity.CST.nodesAt(arena, asdf.decls, source_index);
 
         if (nodes_under_cursor.len == 0) {
             return null;
@@ -243,21 +231,21 @@ pub const Handler = struct {
             switch (last.tag) {
                 else => return null,
                 .identifier => {
-                    const id = last.asString(source);
+                    const id = last.asString(asdf.source);
 
-                    if (session.known_types.get(id)) |declaration| {
+                    if (handler.session.known_types.get(id)) |declaration| {
                         return .{
                             .contents = .{
                                 .MarkupContent = .{
                                     .kind = .markdown,
                                     .value = try std.fmt.allocPrint(arena, "```swt\n{s}\n```", .{
-                                        declaration.position.asSourceCodeString(handler.files.get(declaration.position.span.uri) orelse return null),
+                                        declaration.position.asSourceCodeString(handler.sourceFor(declaration.position.span.uri) orelse return null),
                                     }),
                                 },
                             },
                         };
-                    } else if (session.known_funcs.get(id)) |declaration| {
-                        const decl_source = handler.files.get(declaration.position.span.uri) orelse return null;
+                    } else if (handler.session.known_funcs.get(id)) |declaration| {
+                        const decl_source = (handler.session.files_new.get(declaration.position.span.uri) orelse return null).?.source;
                         return .{
                             .contents = .{
                                 .MarkupContent = .{
@@ -274,15 +262,6 @@ pub const Handler = struct {
                 },
             }
         }
-
-        return .{
-            .contents = .{
-                .MarkupContent = .{
-                    .kind = .plaintext,
-                    .value = "this is the hover text shown",
-                },
-            },
-        };
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_definition
@@ -295,24 +274,17 @@ pub const Handler = struct {
 
         // TODO: uri starts with 'file:///c%3A/Users/...'
 
-        const source = handler.files.get(params.textDocument.uri) orelse {
-            std.log.err("TODO: read file from fs", .{});
+        const path = try pathFromUri(params.textDocument.uri, arena);
+        std.log.debug("path at textDocument/defintion: {s}", .{path});
+
+        const asdf: Swity.ParsedSource = (handler.session.files_new.get(path) orelse {
+            std.log.warn("Can't act on unknown Document: '{s}'", .{params.textDocument.uri});
             return null;
-        };
+        }).?;
 
-        const source_index = lsp.offsets.positionToIndex(source, params.position, handler.offset_encoding);
+        const source_index = lsp.offsets.positionToIndex(asdf.source, params.position, handler.offset_encoding);
 
-        // TODO: persistent session
-        var session: Swity = .init(arena);
-        {
-            var it = handler.files.iterator();
-            while (it.next()) |kv| {
-                session.addFileWithSource(kv.key_ptr.*, kv.value_ptr.*);
-            }
-            try session.addAllPendingTextRecursive();
-        }
-
-        const nodes_under_cursor = try Swity.CST.nodesAt(arena, session.files_new.get(params.textDocument.uri).?.?, source_index);
+        const nodes_under_cursor = try Swity.CST.nodesAt(arena, asdf.decls, source_index);
 
         if (nodes_under_cursor.len == 0) {
             return null;
@@ -321,22 +293,23 @@ pub const Handler = struct {
             switch (last.tag) {
                 else => return null,
                 .identifier => {
-                    const id = last.asString(source);
+                    const id = last.asString(asdf.source);
 
-                    const source_span = if (session.known_types.get(id)) |declaration|
+                    const source_span = if (handler.session.known_types.get(id)) |declaration|
                         declaration.position.children[0].span
-                    else if (session.known_funcs.get(id)) |declaration|
+                    else if (handler.session.known_funcs.get(id)) |declaration|
                         declaration.position.children[0].span
                     else
                         null;
 
                     if (source_span) |span| {
-                        const start_pos = lsp.offsets.indexToPosition(source, span.start, handler.offset_encoding);
-                        const end_pos = lsp.offsets.indexToPosition(source, span.start + span.len, handler.offset_encoding);
+                        const decl_source = handler.sourceFor(span.uri) orelse return null;
+                        const start_pos = lsp.offsets.indexToPosition(decl_source, span.start, handler.offset_encoding);
+                        const end_pos = lsp.offsets.indexToPosition(decl_source, span.start + span.len, handler.offset_encoding);
                         return .{
                             .Definition = .{
                                 .Location = .{
-                                    .uri = params.textDocument.uri,
+                                    .uri = try uriFromPath(span.uri, arena),
                                     .range = .{
                                         .start = start_pos,
                                         .end = end_pos,
@@ -360,6 +333,64 @@ pub const Handler = struct {
         std.log.warn("received unexpected response from client with id '{?}'!", .{response.id});
     }
 };
+
+fn uriFromPath(path: []const u8, arena: std.mem.Allocator) ![]const u8 {
+    const uri: std.Uri = try .parseAfterScheme("file", path);
+    var res_buffer: std.ArrayList(u8) = .init(arena);
+    try uri.format("", .{}, res_buffer.writer());
+    return try res_buffer.toOwnedSlice();
+}
+
+fn pathFromUri(uri: []const u8, arena: std.mem.Allocator) ![]const u8 {
+    const true_uri: std.Uri = try .parse(uri);
+    assert(null == true_uri.fragment);
+    assert(null == true_uri.host);
+    assert(null == true_uri.password);
+    assert(null == true_uri.port);
+    assert(null == true_uri.query);
+    assert(null == true_uri.user);
+    assert(std.mem.eql(u8, "file", true_uri.scheme));
+    const result = try true_uri.path.toRawMaybeAlloc(arena);
+    // windows-specific hack: transform "/c:/..." into "C:/..."
+    if (@import("builtin").target.os.tag == .windows) {
+        assert(result[0] == '/');
+        assert(result[2] == ':');
+        const result2 = try arena.dupe(u8, result[1..]);
+        result2[0] = std.ascii.toUpper(result2[0]);
+        return result2;
+    }
+    return result;
+}
+
+test "path from uri" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+
+    const expected: []const u8 = "C:/Users/foo.swt";
+    const actual: []const u8 = try pathFromUri("file:///c%3A/Users/foo.swt", arena.allocator());
+    try std.testing.expectEqualStrings(expected, actual);
+}
+
+test "uri parts" {
+    const uri: std.Uri = try .parse("file:///C:/foo/file.swt");
+    try std.testing.expectEqual(null, uri.fragment);
+    try std.testing.expectEqual(null, uri.host);
+    try std.testing.expectEqual(null, uri.password);
+    try std.testing.expectEqual(null, uri.port);
+    try std.testing.expectEqual(null, uri.query);
+    try std.testing.expectEqual(null, uri.user);
+    try std.testing.expectEqualStrings("file", uri.scheme);
+}
+
+test "resolve uri" {
+    const base: std.Uri = try .parse("file:///C:/foo/file.swt");
+    const relative: []const u8 = "../bar/baz.swt";
+    const expected: std.Uri = try .parse("file:///C:/bar/baz.swt");
+    var buf: [0x1000]u8 = undefined;
+    var buf2: []u8 = &buf;
+    const actual = try std.Uri.resolve_inplace(base, relative, &buf2);
+    try std.testing.expectEqualDeep(expected, actual);
+}
 
 const std = @import("std");
 const assert = std.debug.assert;
