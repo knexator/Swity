@@ -34,7 +34,7 @@ pub fn main() !void {
         const result = try session.executeMain();
         try stdout.print("{any}\n", .{result});
     } else {
-        try stdout.print("Usage:\n\tswity run [files]\n\tswity lsp", .{});
+        try stdout.print("Usage:\n\tswity run [files]\n\tswity lsp\n", .{});
     }
 
     try bw.flush();

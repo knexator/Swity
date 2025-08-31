@@ -148,6 +148,7 @@ pub const Handler = struct {
         errdefer self.allocator.free(new_text);
 
         self.session.addFileWithSource(try pathFromUri(notification.textDocument.uri, arena), new_text);
+        try self.session.reparseEverything();
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_didChange
@@ -187,6 +188,7 @@ pub const Handler = struct {
 
         self.session.removeFile(path);
         self.session.addFileWithSource(path, new_text);
+        try self.session.reparseEverything();
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_didClose
@@ -199,6 +201,7 @@ pub const Handler = struct {
 
         const path = try pathFromUri(notification.textDocument.uri, arena);
         self.session.removeFile(path);
+        try self.session.reparseEverything();
     }
 
     fn sourceFor(handler: *Handler, path: []const u8) ?[]const u8 {
@@ -213,16 +216,32 @@ pub const Handler = struct {
     ) !?lsp.types.Hover {
         std.log.debug("Received 'textDocument/hover' request", .{});
 
+        std.log.debug("on hover, uri is {s}", .{params.textDocument.uri});
         const path = try pathFromUri(params.textDocument.uri, arena);
+        std.log.debug("on hover, path is {s}", .{path});
 
         const asdf: Swity.ParsedSource = (handler.session.files_new.get(path) orelse {
-            std.log.warn("Can't act on unknown Document: '{s}'", .{params.textDocument.uri});
+            std.log.warn("Can't act on unknown Document: '{s}'", .{path});
+            std.log.debug("known documents:", .{});
+            var it = handler.session.files_new.iterator();
+            while (it.next()) |kv| {
+                std.log.debug("{s}", .{kv.key_ptr.*});
+            }
             return null;
         }).?;
 
         const source_index = lsp.offsets.positionToIndex(asdf.source, params.position, handler.offset_encoding);
 
         const nodes_under_cursor = try Swity.CST.nodesAt(arena, asdf.decls, source_index);
+        std.log.debug("nodes under cursor: {any}", .{nodes_under_cursor});
+
+        {
+            var it = handler.session.files_new.iterator();
+            std.log.debug("knwonw files:", .{});
+            while (it.next()) |kv| {
+                std.log.debug("name {s}, is null {any}", .{ kv.key_ptr.*, kv.value_ptr.* == null });
+            }
+        }
 
         if (nodes_under_cursor.len == 0) {
             return null;
@@ -234,6 +253,10 @@ pub const Handler = struct {
                     const id = last.asString(asdf.source);
 
                     if (handler.session.known_types.get(id)) |declaration| {
+                        const asdf_source = handler.sourceFor(declaration.position.span.uri);
+                        std.log.debug("declaration span uri: {s}", .{declaration.position.span.uri});
+                        std.log.debug("is asdfsource null: {any}", .{asdf_source == null});
+
                         return .{
                             .contents = .{
                                 .MarkupContent = .{
@@ -258,7 +281,15 @@ pub const Handler = struct {
                                 },
                             },
                         };
-                    } else return null;
+                        // } else return null;
+                    } else {
+                        var it = handler.session.known_types.iterator();
+                        std.log.debug("known types:", .{});
+                        while (it.next()) |kv| {
+                            std.log.debug("name {s}", .{kv.key_ptr.*});
+                        }
+                        return null;
+                    }
                 },
             }
         }
@@ -278,7 +309,7 @@ pub const Handler = struct {
         std.log.debug("path at textDocument/defintion: {s}", .{path});
 
         const asdf: Swity.ParsedSource = (handler.session.files_new.get(path) orelse {
-            std.log.warn("Can't act on unknown Document: '{s}'", .{params.textDocument.uri});
+            std.log.warn("Can't act on unknown Document: '{s}'", .{path});
             return null;
         }).?;
 

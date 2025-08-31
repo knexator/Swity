@@ -54,9 +54,38 @@ pub const ParsedSource = struct {
         };
         parser.parseAll();
 
-        // TODO: move somewhere else
-        // TODO: add text recursive
-        for (parser.top_level_results.items) |*declaration| {
+        // TODO
+        // _ = self.parsing_arena.reset(.retain_capacity);
+
+        return .{
+            .source = text,
+            .decls = parser.top_level_results.toOwnedSlice() catch OoM(),
+        };
+    }
+
+    // pub fn fromFs(gpa: std.mem.Allocator, path: []const u8) ParsedSource {
+    pub fn fromFs(swity: *Swity, path: []const u8) !ParsedSource {
+        // var arena: std.heap.ArenaAllocator = .init(gpa);
+        const file = try std.fs.openFileAbsolute(path, .{});
+        // const text = try file.readToEndAlloc(arena.allocator(), std.math.maxInt(usize));
+        const text = try file.readToEndAlloc(swity.duplicated_source_arena.allocator(), std.math.maxInt(usize));
+
+        return .fromText(swity, path, text);
+    }
+};
+
+pub fn reparseEverything(swity: *Swity) !void {
+    swity.known_funcs.clearRetainingCapacity();
+    swity.known_types.clearRetainingCapacity();
+    swity.main_expression = null;
+
+    // TODO: should this be here?
+    try swity.addAllPendingTextRecursive();
+
+    var it = swity.files_new.iterator();
+    while (it.next()) |kv| {
+        const text = kv.value_ptr.*.?.source;
+        for (kv.value_ptr.*.?.decls) |*declaration| {
             switch (declaration.tag) {
                 .data_definition => {
                     assert(declaration.children.len == 2);
@@ -81,26 +110,8 @@ pub const ParsedSource = struct {
                 // self.swity.known_funcs.putNoClobber(id, result) catch OoM();
             }
         }
-
-        // TODO
-        // _ = self.parsing_arena.reset(.retain_capacity);
-
-        return .{
-            .source = text,
-            .decls = parser.top_level_results.toOwnedSlice() catch OoM(),
-        };
     }
-
-    // pub fn fromFs(gpa: std.mem.Allocator, path: []const u8) ParsedSource {
-    pub fn fromFs(swity: *Swity, path: []const u8) !ParsedSource {
-        // var arena: std.heap.ArenaAllocator = .init(gpa);
-        const file = try std.fs.openFileAbsolute(path, .{});
-        // const text = try file.readToEndAlloc(arena.allocator(), std.math.maxInt(usize));
-        const text = try file.readToEndAlloc(swity.duplicated_source_arena.allocator(), std.math.maxInt(usize));
-
-        return .fromText(swity, path, text);
-    }
-};
+}
 
 /// Concrete Syntax Tree
 pub const CST = struct {
@@ -285,16 +296,15 @@ pub fn deinit(self: *Swity) void {
 
 // TODO: setFileSource
 pub fn addFileWithSource(self: *Swity, path: []const u8, text: []const u8) void {
-    self.files_new.putNoClobber(path, .fromText(self, path, text)) catch OoM();
+    // TODO: clarify ownership
+    const path_owned = self.permanent_arena.allocator().dupe(u8, path) catch OoM();
+    // self.files_new.putNoClobber(path_owned, .fromText(self, path_owned, text)) catch OoM();
+    // TODO: use putNoClobber
+    self.files_new.put(path_owned, .fromText(self, path_owned, text)) catch OoM();
 }
 
 pub fn removeFile(self: *Swity, path: []const u8) void {
     assert(self.files_new.swapRemove(path));
-
-    self.known_funcs.clearRetainingCapacity();
-    self.known_types.clearRetainingCapacity();
-    self.main_expression = null;
-    // TODO: reparse
 }
 
 pub fn addIncludeFile(self: *Swity, path: []const u8) void {
