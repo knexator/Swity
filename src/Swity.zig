@@ -34,6 +34,9 @@ duplicated_source_arena: std.heap.ArenaAllocator,
 /// keys are absolute paths
 files_new: std.StringArrayHashMap(?ParsedSource),
 
+/// files brought in due to an #include
+included_paths: std.ArrayList([]const u8),
+
 pub const ParsedSource = struct {
     // TODO
     // arena: std.heap.ArenaAllocator,
@@ -74,18 +77,39 @@ pub const ParsedSource = struct {
     }
 };
 
+// TODO: add "and also recursive includes" to this name
 pub fn reparseEverything(swity: *Swity) !void {
     swity.known_funcs.clearRetainingCapacity();
     swity.known_types.clearRetainingCapacity();
-    swity.main_expression = null;
+    // TODO: uncomment
+    // swity.main_expression = null;
 
-    // TODO: should this be here?
-    try swity.addAllPendingTextRecursive();
+    try swity.parseEverything();
+}
 
-    var it = swity.files_new.iterator();
-    while (it.next()) |kv| {
-        const text = kv.value_ptr.*.?.source;
-        for (kv.value_ptr.*.?.decls) |*declaration| {
+pub fn parseEverything(swity: *Swity) !void {
+    assert(swity.known_funcs.count() == 0);
+    assert(swity.known_types.count() == 0);
+    // TODO: uncomment
+    // assert(swity.main_expression == null);
+
+    // TODO: mem
+    var pending_files: std.fifo.LinearFifo([]const u8, .Dynamic) = .init(swity.per_execution_arena.allocator());
+    {
+        var it_files = swity.files_new.iterator();
+        while (it_files.next()) |kv| {
+            try pending_files.writeItem(kv.key_ptr.*);
+        }
+    }
+
+    while (pending_files.readItem()) |path| {
+        const gop = try swity.files_new.getOrPut(path);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = try .fromFs(swity, path);
+        }
+        const asdf = gop.value_ptr.* orelse panic("bad path: {s}", .{path});
+        const text = asdf.source;
+        for (asdf.decls) |*declaration| {
             switch (declaration.tag) {
                 .data_definition => {
                     assert(declaration.children.len == 2);
@@ -106,8 +130,26 @@ pub fn reparseEverything(swity: *Swity) !void {
                         .position = declaration,
                     }) catch OoM();
                 },
+                .include => {
+                    assert(declaration.children.len == 1);
+                    const filename = declaration.children[0].asString(text);
+                    // TODO: memory leak
+                    const new_path = std.fs.path.resolve(swity.permanent_arena.allocator(), &.{
+                        path,
+                        "..",
+                        filename,
+                    }) catch panic("TODO", .{});
+                    if (!swity.files_new.contains(new_path) and not_in_pending_files: {
+                        for (pending_files.readableSlice(0)) |f| {
+                            if (std.mem.eql(u8, f, new_path)) {
+                                break :not_in_pending_files false;
+                            }
+                        } else break :not_in_pending_files true;
+                    }) {
+                        try pending_files.writeItem(new_path);
+                    }
+                },
                 else => unreachable,
-                // self.swity.known_funcs.putNoClobber(id, result) catch OoM();
             }
         }
     }
@@ -119,6 +161,7 @@ pub const CST = struct {
         data_definition,
         fn_definition,
         main_definition,
+        include,
 
         // keyword_data,
         // keyword_fn,
@@ -273,6 +316,7 @@ pub const CST = struct {
 
 pub fn init(gpa: std.mem.Allocator) Swity {
     return .{
+        .included_paths = .init(gpa),
         .files_new = .init(gpa),
         .known_types = .init(gpa),
         .known_funcs = .init(gpa),
@@ -284,6 +328,7 @@ pub fn init(gpa: std.mem.Allocator) Swity {
 }
 
 pub fn deinit(self: *Swity) void {
+    self.included_paths.deinit();
     // TODO: deinit each file's contents
     self.files_new.deinit();
     self.known_types.deinit();
@@ -307,35 +352,36 @@ pub fn removeFile(self: *Swity, path: []const u8) void {
     assert(self.files_new.swapRemove(path));
 }
 
-pub fn addIncludeFile(self: *Swity, path: []const u8) void {
+pub fn addMainFile(self: *Swity, path: []const u8) void {
     const kv = self.files_new.getOrPut(path) catch OoM();
     if (kv.found_existing) {
         return;
     } else {
         kv.key_ptr.* = self.permanent_arena.allocator().dupe(u8, path) catch OoM();
-        kv.value_ptr.* = null;
+        kv.value_ptr.* = ParsedSource.fromFs(self, kv.key_ptr.*) catch @panic("TODO");
     }
 }
 
-pub fn addAllPendingTextRecursive(self: *Swity) !void {
-    var it = self.files_new.iterator();
-    while (it.next()) |kv| {
-        if (kv.value_ptr.* == null) {
-            kv.value_ptr.* = try .fromFs(self, kv.key_ptr.*);
-            break;
-        }
-    } else return;
-
-    // we processed a file, so let's call it again since it might have had its own includes
-    try self.addAllPendingTextRecursive();
-}
+// TODO: remove
+// pub fn addAllPendingTextRecursive(self: *Swity) !void {
+//     var it = self.files_new.iterator();
+//     while (it.next()) |kv| {
+//         if (kv.value_ptr.* == null) {
+//             kv.value_ptr.* = try .fromFs(self, kv.key_ptr.*);
+//             break;
+//         }
+//     } else return;
+//     // we processed a file, so let's call it again since it might have had its own includes
+//     try self.addAllPendingTextRecursive();
+// }
 
 fn addReplText(self: *Swity, text: []const u8) void {
     self.files_new.putNoClobber("REPL", .fromText(self, "REPL", text)) catch OoM();
+    self.reparseEverything() catch @panic("TODO");
 }
 
 pub fn executeMain(self: *Swity) !Value {
-    try self.addAllPendingTextRecursive();
+    try self.reparseEverything();
     assert(self.main_expression != null);
     self.solveAllTypes();
     self.optimizeAllFuncs();
@@ -1056,18 +1102,25 @@ const Parser = struct {
                 .argument = argument,
             };
         } else if (self.maybeConsume("include")) {
+            const span_start = self.cursor() - "include".len;
             self.consumeWhitespace();
-            const filename = self.consumeSingleLiteral();
+            const filename = self.consumeIdentifierOrLiteral();
+            assert(filename.tag == .literal);
             self.trimLeft();
             self.consume(";");
+            const span_end = self.cursor();
 
-            self.swity.addIncludeFile(
-                std.fs.path.resolve(self.arena, &.{
-                    self.source_uri,
-                    "..",
+            self.top_level_results.append(.{
+                .tag = .include,
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+                .children = self.result.dupe(CST, &.{
                     filename,
-                }) catch panic("TODO", .{}),
-            );
+                }) catch OoM(),
+            }) catch OoM();
         } else {
             std.log.err("unexpected final text: {s}", .{self.remaining_text});
             unreachable;

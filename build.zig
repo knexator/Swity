@@ -45,14 +45,13 @@ pub fn build(b: *std.Build) void {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
         run_cmd.addArg("run");
-        if (false) {
+        if (true) {
             run_cmd.addFileArg(b.path("examples/advent_of_code.swt"));
             run_cmd.expectStdOutEqual(
                 \\("0" ("9" ("6" ("4" ("7" ("5" ("3" "nil")))))))
                 \\
             );
-        }
-        if (true) {
+        } else {
             run_cmd.addFileArg(b.path("examples/naturals.swt"));
             run_cmd.expectStdOutEqual(
                 \\("succ" ("succ" "zero"))

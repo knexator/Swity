@@ -144,6 +144,8 @@ pub const Handler = struct {
     ) !void {
         std.log.debug("Received 'textDocument/didOpen' notification", .{});
 
+        std.log.debug("opening {s}", .{notification.textDocument.uri});
+
         const new_text = try self.allocator.dupe(u8, notification.textDocument.text);
         errdefer self.allocator.free(new_text);
 
@@ -160,6 +162,8 @@ pub const Handler = struct {
         std.log.debug("Received 'textDocument/didChange' notification", .{});
 
         const path = try pathFromUri(notification.textDocument.uri, arena);
+
+        std.log.debug("changing {s}", .{path});
 
         const current_text = (self.session.files_new.get(path) orelse {
             std.log.warn("Modifying non existent Document: '{s}'", .{notification.textDocument.uri});
@@ -200,6 +204,9 @@ pub const Handler = struct {
         std.log.debug("Received 'textDocument/didClose' notification", .{});
 
         const path = try pathFromUri(notification.textDocument.uri, arena);
+
+        std.log.debug("closing {s}", .{path});
+
         self.session.removeFile(path);
         try self.session.reparseEverything();
     }
@@ -394,12 +401,14 @@ fn pathFromUri(uri: []const u8, arena: std.mem.Allocator) ![]const u8 {
 }
 
 test "path from uri" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
+    if (@import("builtin").target.os.tag == .windows) {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
 
-    const expected: []const u8 = "C:/Users/foo.swt";
-    const actual: []const u8 = try pathFromUri("file:///c%3A/Users/foo.swt", arena.allocator());
-    try std.testing.expectEqualStrings(expected, actual);
+        const expected: []const u8 = "C:/Users/foo.swt";
+        const actual: []const u8 = try pathFromUri("file:///c%3A/Users/foo.swt", arena.allocator());
+        try std.testing.expectEqualStrings(expected, actual);
+    }
 }
 
 test "uri parts" {

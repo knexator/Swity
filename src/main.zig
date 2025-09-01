@@ -29,7 +29,7 @@ pub fn main() !void {
         while (args.next()) |arg| {
             const path = try std.fs.cwd().realpathAlloc(gpa, arg);
             defer gpa.free(path);
-            session.addIncludeFile(path);
+            session.addMainFile(path);
         }
         const result = try session.executeMain();
         try stdout.print("{any}\n", .{result});
