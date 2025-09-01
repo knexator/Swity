@@ -148,6 +148,19 @@ pub fn parseEverything(swity: *Swity) !void {
                         try pending_files.writeItem(new_path);
                     }
                 },
+                .main_definition => {
+                    assert(declaration.children.len == 2);
+
+                    const func_id = declaration.children[0].asString(text);
+                    const argument = declaration.children[1].asValue(text, swity.permanent_arena.allocator());
+                    // TODO
+                    // assert(swity.main_expression == null);
+
+                    swity.main_expression = .{
+                        .func_id = func_id,
+                        .argument = argument,
+                    };
+                },
                 else => unreachable,
             }
         }
@@ -168,6 +181,10 @@ pub const CST = struct {
 
         identifier,
         literal,
+        /// multiline literal, to be interpreted as a list of chars
+        eof_literal,
+        /// literal without the surrounding quotes
+        inner_literal,
 
         data_oneof,
         data_plex,
@@ -203,7 +220,7 @@ pub const CST = struct {
 
     pub fn asString(self: CST, source: []const u8) []const u8 {
         return switch (self.tag) {
-            .identifier => source[self.span.start..][0..self.span.len],
+            .identifier, .inner_literal => source[self.span.start..][0..self.span.len],
             // removes the surrouding quotes
             .literal => source[self.span.start..][1 .. self.span.len - 1],
             else => unreachable,
@@ -284,6 +301,41 @@ pub const CST = struct {
             },
             else => unreachable,
         }
+    }
+
+    pub fn asValue(self: CST, source: []const u8, mem: std.mem.Allocator) Value {
+        return switch (self.tag) {
+            .literal => return .{ .literal = self.asString(source) },
+            .fn_plex => {
+                const result = mem.alloc(Value, self.children.len) catch OoM();
+                for (result, self.children) |*dst, child| {
+                    dst.* = child.asValue(source, mem);
+                }
+                return .{ .plex = result };
+            },
+            .eof_literal => {
+                assert(self.children.len == 1);
+                var remaining_source = self.children[0].asString(source);
+                var result: Value = .{ .literal = "nil" };
+                var tail: *Value = &result;
+                while (remaining_source.len > 0) {
+                    // hacky
+                    const next_char = if (std.mem.startsWith(u8, remaining_source, "\r\n")) blk: {
+                        remaining_source = remaining_source[1..];
+                        break :blk "\\n";
+                    } else remaining_source[0..1];
+
+                    tail.* = .{ .plex = mem.dupe(Value, &.{
+                        .{ .literal = next_char },
+                        tail.*,
+                    }) catch OoM() };
+                    tail = &tail.plex[1];
+                    remaining_source = remaining_source[1..];
+                }
+                return result;
+            },
+            else => unreachable,
+        };
     }
 
     pub fn asInnerFunc(self: *const CST, source: []const u8, mem: std.mem.Allocator) Func {
@@ -958,77 +1010,6 @@ const Parser = struct {
     original_text_len: usize,
     top_level_results: std.ArrayList(CST),
 
-    const RawSexpr = union(enum) {
-        literal: []const u8,
-        plex: []const RawSexpr,
-
-        fn asValue(self: RawSexpr, mem: std.mem.Allocator) Value {
-            switch (self) {
-                .literal => |l| return .{ .literal = maybeLiteral(l).? },
-                .plex => |p| {
-                    const res = mem.alloc(Value, p.len) catch OoM();
-                    for (res, p) |*dst, v| {
-                        dst.* = v.asValue(mem);
-                    }
-                    return .{ .plex = res };
-                },
-            }
-        }
-
-        fn asTree(self: RawSexpr, mem: std.mem.Allocator) Tree {
-            switch (self) {
-                .literal => |l| {
-                    if (maybeLiteral(l)) |r| {
-                        return .{ .literal = r };
-                    } else {
-                        return .{ .variable = .{ .name = l, .stack_index = null } };
-                    }
-                },
-                .plex => |p| {
-                    const res = mem.alloc(Tree, p.len) catch OoM();
-                    for (res, p) |*dst, v| {
-                        dst.* = v.asTree(mem);
-                    }
-                    return .{ .plex = res };
-                },
-            }
-        }
-
-        fn asType(self: RawSexpr, mem: std.mem.Allocator) Type {
-            switch (self) {
-                .literal => |l| {
-                    if (maybeLiteral(l)) |r| {
-                        return .{ .literal = r };
-                    } else {
-                        return .{ .ref = l };
-                    }
-                },
-                .plex => |p| {
-                    const res = mem.alloc(Type, p.len) catch OoM();
-                    for (res, p) |*dst, v| {
-                        dst.* = v.asType(mem);
-                    }
-                    return .{ .plex = res };
-                },
-            }
-        }
-
-        fn maybeLiteral(l: []const u8) ?[]const u8 {
-            if (l[0] == '"') return l[1 .. l.len - 1];
-            return null;
-        }
-
-        fn asId(self: RawSexpr) []const u8 {
-            switch (self) {
-                else => unreachable,
-                .literal => |l| {
-                    assert(maybeLiteral(l) == null);
-                    return l;
-                },
-            }
-        }
-    };
-
     fn cursor(self: Parser) usize {
         return self.original_text_len - self.remaining_text.len;
     }
@@ -1086,20 +1067,29 @@ const Parser = struct {
                 }) catch OoM(),
             }) catch OoM();
         } else if (self.maybeConsume("main")) {
-            // TODO
-            // assert(self.swity.main_expression == null);
+            const span_start = self.cursor() - "main".len;
             self.consumeWhitespace();
-            const func_id: FuncId = self.consumeFuncId();
+            const func_id: CST = self.consumeIdentifier();
             self.trimLeft();
             self.consume(":");
             self.trimLeft();
-            const argument = self.consumeValue();
+            const argument = self.consumeRawSexprNew();
             self.trimLeft();
             self.consume(";");
-            self.swity.main_expression = .{
-                .func_id = func_id,
-                .argument = argument,
-            };
+            const span_end = self.cursor();
+
+            self.top_level_results.append(.{
+                .tag = .main_definition,
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+                .children = self.result.dupe(CST, &.{
+                    func_id,
+                    argument,
+                }) catch OoM(),
+            }) catch OoM();
         } else if (self.maybeConsume("include")) {
             const span_start = self.cursor() - "include".len;
             self.consumeWhitespace();
@@ -1145,58 +1135,10 @@ const Parser = struct {
         }
     }
 
-    const consumeFuncId = consumeId;
-    const consumeTypeId = consumeId;
-
-    fn consumeId(self: *Parser) []const u8 {
-        const raw = self.consumeRawSexpr();
-        return raw.asId();
-    }
-
     fn consumeIdentifier(self: *Parser) CST {
-        const span_start = self.cursor();
-        _ = self.consumeId();
-        const span_end = self.cursor();
-
-        return .{
-            .tag = .identifier,
-            .children = &.{},
-            .span = .{
-                .uri = self.source_uri,
-                .start = span_start,
-                .len = span_end - span_start,
-            },
-        };
-    }
-
-    fn consumeValue(self: *Parser) Value {
-        if (self.maybeConsume("<<EOF")) {
-            _ = self.maybeConsume("\r");
-            self.consume("\n");
-            var result: Value = .{ .literal = "nil" };
-            var tail: *Value = &result;
-            while (true) {
-                if (self.maybeConsume("EOF")) {
-                    return result;
-                } else {
-                    // hacky
-                    const next_char = if (self.nextIs("\r\n")) blk: {
-                        self.consume("\r");
-                        break :blk "\\n";
-                    } else self.remaining_text[0..1];
-
-                    tail.* = .{ .plex = self.result.dupe(Value, &.{
-                        .{ .literal = next_char },
-                        tail.*,
-                    }) catch OoM() };
-                    tail = &tail.plex[1];
-                    self.remaining_text = self.remaining_text[1..];
-                }
-            }
-        } else {
-            const raw = self.consumeRawSexpr();
-            return raw.asValue(self.result);
-        }
+        const result = self.consumeIdentifierOrLiteral();
+        assert(result.tag == .identifier);
+        return result;
     }
 
     fn consumeTypeBody(self: *Parser) CST {
@@ -1245,12 +1187,14 @@ const Parser = struct {
         }
     }
 
-    fn consumeIdentifierOrLiteral(self: *Parser) CST {
+    fn consumeInnerEof(self: *Parser) CST {
         const span_start = self.cursor();
-        const is_literal = self.consumeSingleWord().is_literal;
-        const span_end = self.cursor();
+        while (!self.maybeConsume("EOF")) {
+            self.remaining_text = self.remaining_text[1..];
+        }
+        const span_end = self.cursor() - "EOF".len;
         return .{
-            .tag = if (is_literal) .literal else .identifier,
+            .tag = .inner_literal,
             .children = &.{},
             .span = .{
                 .uri = self.source_uri,
@@ -1258,6 +1202,40 @@ const Parser = struct {
                 .len = span_end - span_start,
             },
         };
+    }
+
+    fn consumeIdentifierOrLiteral(self: *Parser) CST {
+        if (self.maybeConsume("<<EOF")) {
+            const span_start = self.cursor() - "<<EOF".len;
+            _ = self.maybeConsume("\r");
+            self.consume("\n");
+            const child = self.consumeInnerEof();
+            const span_end = self.cursor();
+            return .{
+                .tag = .eof_literal,
+                .children = self.result.dupe(CST, &.{
+                    child,
+                }) catch OoM(),
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+            };
+        } else {
+            const span_start = self.cursor();
+            const is_literal = self.consumeSingleWord().is_literal;
+            const span_end = self.cursor();
+            return .{
+                .tag = if (is_literal) .literal else .identifier,
+                .children = &.{},
+                .span = .{
+                    .uri = self.source_uri,
+                    .start = span_start,
+                    .len = span_end - span_start,
+                },
+            };
+        }
     }
 
     fn consumeCasesNew(self: *Parser) CST {
@@ -1370,12 +1348,6 @@ const Parser = struct {
         }
     }
 
-    fn consumeSingleLiteral(self: *Parser) []const u8 {
-        const result = self.consumeSingleWord();
-        assert(result.is_literal);
-        return result.result;
-    }
-
     fn consumeSingleWord(self: *Parser) struct { result: []const u8, is_literal: bool } {
         if (self.nextIs("\"")) {
             var next_index = std.mem.indexOfScalarPos(
@@ -1407,46 +1379,6 @@ const Parser = struct {
         }
     }
 
-    fn consumeRawSexpr(self: *Parser) RawSexpr {
-        if (self.maybeConsume("(")) {
-            var inner: std.ArrayList(RawSexpr) = .init(self.arena);
-            self.trimLeft();
-            while (!self.maybeConsume(")")) {
-                inner.append(self.consumeRawSexpr()) catch OoM();
-                self.trimLeft();
-            }
-            return .{ .plex = inner.toOwnedSlice() catch OoM() };
-        } else if (self.nextIs("\"")) {
-            // TODO NOW: remove
-            var next_index = std.mem.indexOfScalarPos(
-                u8,
-                self.remaining_text,
-                1,
-                '"',
-            ) orelse panic("unclosed \"", .{});
-            while (self.remaining_text[next_index - 1] == '\\') {
-                next_index = std.mem.indexOfScalarPos(
-                    u8,
-                    self.remaining_text,
-                    next_index + 1,
-                    '"',
-                ) orelse panic("unclosed \"", .{});
-            }
-            const result: RawSexpr = .{ .literal = self.remaining_text[0 .. next_index + 1] };
-            self.remaining_text = self.remaining_text[next_index + 1 ..];
-            return result;
-        } else {
-            const next_index = std.mem.indexOfAny(
-                u8,
-                self.remaining_text,
-                std.ascii.whitespace ++ "{}():;",
-            ) orelse self.remaining_text.len;
-            const result: RawSexpr = .{ .literal = self.remaining_text[0..next_index] };
-            self.remaining_text = self.remaining_text[next_index..];
-            return result;
-        }
-    }
-
     fn consumeWhitespace(self: *Parser) void {
         const old_len = self.remaining_text.len;
         self.trimLeft();
@@ -1462,55 +1394,6 @@ const Parser = struct {
                 self.remaining_text = self.remaining_text[self.remaining_text.len..];
             }
             self.trimLeft();
-        }
-    }
-
-    test "parse raw" {
-        var process: Swity = .init(std.testing.allocator);
-        defer process.deinit();
-
-        var parser: Parser = .{
-            .top_level_results = .init(process.permanent_arena.allocator()),
-            .swity = &process,
-            .source_uri = "REPL",
-            .remaining_text = "",
-            .original_text_len = 0,
-            .arena = process.parsing_arena.allocator(),
-            .result = process.permanent_arena.allocator(),
-        };
-
-        {
-            parser.remaining_text = "foo";
-            const expected: RawSexpr = .{ .literal = "foo" };
-            const actual = parser.consumeRawSexpr();
-            try std.testing.expectEqualDeep(expected, actual);
-            try std.testing.expectEqualStrings("", parser.remaining_text);
-        }
-
-        {
-            parser.remaining_text = "foo)";
-            const expected: RawSexpr = .{ .literal = "foo" };
-            const actual = parser.consumeRawSexpr();
-            try std.testing.expectEqualDeep(expected, actual);
-            try std.testing.expectEqualStrings(")", parser.remaining_text);
-        }
-
-        {
-            parser.remaining_text = "foo:";
-            const expected: RawSexpr = .{ .literal = "foo" };
-            const actual = parser.consumeRawSexpr();
-            try std.testing.expectEqualDeep(expected, actual);
-            try std.testing.expectEqualStrings(":", parser.remaining_text);
-        }
-
-        {
-            parser.remaining_text = "(foo)";
-            const expected: RawSexpr = .{ .plex = &.{
-                .{ .literal = "foo" },
-            } };
-            const actual = parser.consumeRawSexpr();
-            try std.testing.expectEqualDeep(expected, actual);
-            try std.testing.expectEqualStrings("", parser.remaining_text);
         }
     }
 
