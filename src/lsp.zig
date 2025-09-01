@@ -168,7 +168,7 @@ pub const Handler = struct {
         const current_text = (self.session.files_new.get(path) orelse {
             std.log.warn("Modifying non existent Document: '{s}'", .{notification.textDocument.uri});
             return;
-        }).?.source;
+        }).source;
 
         var buffer: std.ArrayListUnmanaged(u8) = .empty;
         errdefer buffer.deinit(self.allocator);
@@ -212,7 +212,7 @@ pub const Handler = struct {
     }
 
     fn sourceFor(handler: *Handler, path: []const u8) ?[]const u8 {
-        return (handler.session.files_new.get(path) orelse return null).?.source;
+        return (handler.session.files_new.get(path) orelse return null).source;
     }
 
     /// https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_hover
@@ -227,7 +227,7 @@ pub const Handler = struct {
         const path = try pathFromUri(params.textDocument.uri, arena);
         std.log.debug("on hover, path is {s}", .{path});
 
-        const asdf: Swity.ParsedSource = (handler.session.files_new.get(path) orelse {
+        const asdf: Swity.ParsedSource = handler.session.files_new.get(path) orelse {
             std.log.warn("Can't act on unknown Document: '{s}'", .{path});
             std.log.debug("known documents:", .{});
             var it = handler.session.files_new.iterator();
@@ -235,20 +235,12 @@ pub const Handler = struct {
                 std.log.debug("{s}", .{kv.key_ptr.*});
             }
             return null;
-        }).?;
+        };
 
         const source_index = lsp.offsets.positionToIndex(asdf.source, params.position, handler.offset_encoding);
 
         const nodes_under_cursor = try Swity.CST.nodesAt(arena, asdf.decls, source_index);
         std.log.debug("nodes under cursor: {any}", .{nodes_under_cursor});
-
-        {
-            var it = handler.session.files_new.iterator();
-            std.log.debug("knwonw files:", .{});
-            while (it.next()) |kv| {
-                std.log.debug("name {s}, is null {any}", .{ kv.key_ptr.*, kv.value_ptr.* == null });
-            }
-        }
 
         if (nodes_under_cursor.len == 0) {
             return null;
@@ -275,7 +267,7 @@ pub const Handler = struct {
                             },
                         };
                     } else if (handler.session.known_funcs.get(id)) |declaration| {
-                        const decl_source = (handler.session.files_new.get(declaration.position.span.uri) orelse return null).?.source;
+                        const decl_source = (handler.session.files_new.get(declaration.position.span.uri) orelse return null).source;
                         return .{
                             .contents = .{
                                 .MarkupContent = .{
@@ -315,10 +307,10 @@ pub const Handler = struct {
         const path = try pathFromUri(params.textDocument.uri, arena);
         std.log.debug("path at textDocument/defintion: {s}", .{path});
 
-        const asdf: Swity.ParsedSource = (handler.session.files_new.get(path) orelse {
+        const asdf: Swity.ParsedSource = handler.session.files_new.get(path) orelse {
             std.log.warn("Can't act on unknown Document: '{s}'", .{path});
             return null;
-        }).?;
+        };
 
         const source_index = lsp.offsets.positionToIndex(asdf.source, params.position, handler.offset_encoding);
 

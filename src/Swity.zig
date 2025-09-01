@@ -30,9 +30,8 @@ permanent_arena: std.heap.ArenaAllocator,
 duplicated_source_arena: std.heap.ArenaAllocator,
 
 // TODO: rename
-// TODO: should not be nullable
 /// keys are absolute paths
-files_new: std.StringArrayHashMap(?ParsedSource),
+files_new: std.StringArrayHashMap(ParsedSource),
 
 /// files brought in due to an #include
 included_paths: std.ArrayList([]const u8),
@@ -107,7 +106,7 @@ pub fn parseEverything(swity: *Swity) !void {
         if (!gop.found_existing) {
             gop.value_ptr.* = try .fromFs(swity, path);
         }
-        const asdf = gop.value_ptr.* orelse panic("bad path: {s}", .{path});
+        const asdf = gop.value_ptr.*;
         const text = asdf.source;
         for (asdf.decls) |*declaration| {
             switch (declaration.tag) {
