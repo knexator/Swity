@@ -101,9 +101,12 @@ pub fn parseEverything(swity: *Swity) !void {
         }
     }
 
+    // std.log.debug("before starting, pending files are: {any}", .{pending_files.readableSlice(0)});
     while (pending_files.readItem()) |path| {
+        // std.log.debug("doing stuff for {s}", .{path});
         const gop = try swity.files_new.getOrPut(path);
         if (!gop.found_existing) {
+            // std.log.debug("loading {s} from disk", .{path});
             gop.value_ptr.* = try .fromFs(swity, path);
         }
         const asdf = gop.value_ptr.*;
@@ -133,11 +136,11 @@ pub fn parseEverything(swity: *Swity) !void {
                     assert(declaration.children.len == 1);
                     const filename = declaration.children[0].asString(text);
                     // TODO: memory leak
-                    const new_path = std.fs.path.resolve(swity.permanent_arena.allocator(), &.{
+                    const new_path = swity.ownedAndNormalizedPath(std.fs.path.resolve(swity.parsing_arena.allocator(), &.{
                         path,
                         "..",
                         filename,
-                    }) catch panic("TODO", .{});
+                    }) catch panic("TODO", .{}));
                     if (!swity.files_new.contains(new_path) and not_in_pending_files: {
                         for (pending_files.readableSlice(0)) |f| {
                             if (std.mem.eql(u8, f, new_path)) {
@@ -145,6 +148,7 @@ pub fn parseEverything(swity: *Swity) !void {
                             }
                         } else break :not_in_pending_files true;
                     }) {
+                        // std.log.debug("including {s}, which was not found", .{new_path});
                         try pending_files.writeItem(new_path);
                     }
                 },
@@ -390,20 +394,32 @@ pub fn deinit(self: *Swity) void {
     self.per_execution_arena.deinit();
 }
 
-// TODO: setFileSource
-pub fn addFileWithSource(self: *Swity, path: []const u8, text: []const u8) void {
-    // TODO: clarify ownership
-    const path_owned = self.permanent_arena.allocator().dupe(u8, path) catch OoM();
-    // self.files_new.putNoClobber(path_owned, .fromText(self, path_owned, text)) catch OoM();
-    // TODO: use putNoClobber
-    self.files_new.put(path_owned, .fromText(self, path_owned, text)) catch OoM();
+fn ownedAndNormalizedPath(self: *Swity, untrusted_path: []const u8) []const u8 {
+    // TODO: don't leak
+    const result = self.permanent_arena.allocator().alloc(u8, untrusted_path.len) catch OoM();
+    _ = std.mem.replace(u8, untrusted_path, "\\", "/", result);
+    return result;
 }
 
-pub fn removeFile(self: *Swity, path: []const u8) void {
+// TODO: setFileSource
+pub fn addFileWithSource(self: *Swity, untrusted_path: []const u8, text: []const u8) void {
+    // TODO: clarify ownership
+    const path = self.ownedAndNormalizedPath(untrusted_path);
+    // self.files_new.putNoClobber(path_owned, .fromText(self, path_owned, text)) catch OoM();
+    if (self.files_new.contains(path)) {
+        assert(std.mem.eql(u8, self.files_new.get(path).?.source, text));
+    } else {
+        self.files_new.put(path, .fromText(self, path, text)) catch OoM();
+    }
+}
+
+pub fn removeFile(self: *Swity, untrusted_path: []const u8) void {
+    const path = self.ownedAndNormalizedPath(untrusted_path);
     assert(self.files_new.swapRemove(path));
 }
 
-pub fn addMainFile(self: *Swity, path: []const u8) void {
+pub fn addMainFile(self: *Swity, untrusted_path: []const u8) void {
+    const path = self.ownedAndNormalizedPath(untrusted_path);
     const kv = self.files_new.getOrPut(path) catch OoM();
     if (kv.found_existing) {
         return;
