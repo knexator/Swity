@@ -12,6 +12,67 @@ pub fn run(gpa: std.mem.Allocator) !void {
     );
 }
 
+test "hover definition" {
+    var handler: Handler = .init(std.testing.allocator);
+    defer handler.deinit();
+
+    var per_call_arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+
+    _ = handler.initialize(per_call_arena.allocator(), .{
+        .capabilities = .{
+            .general = .{
+                .positionEncodings = &.{
+                    .@"utf-8",
+                },
+            },
+        },
+    });
+    _ = per_call_arena.reset(.free_all);
+
+    const source: []const u8 =
+        \\data Foo {
+        \\    "1",
+        \\    (Foo "2"),
+        \\}
+    ;
+    try handler.@"textDocument/didOpen"(
+        per_call_arena.allocator(),
+        .{ .textDocument = .{
+            .uri = "file:///C:/test_file.swt",
+            .languageId = "swity",
+            .version = 1,
+            .text = source,
+        } },
+    );
+    _ = per_call_arena.reset(.free_all);
+    const response = try handler.@"textDocument/hover"(
+        per_call_arena.allocator(),
+        .{ .textDocument = .{ .uri = "file:///C:/test_file.swt" }, .position = .{
+            .line = 2,
+            .character = 5,
+        } },
+    );
+    _ = per_call_arena.reset(.free_all);
+
+    try handler.@"textDocument/didClose"(
+        per_call_arena.allocator(),
+        .{ .textDocument = .{
+            .uri = "file:///C:/test_file.swt",
+        } },
+    );
+    _ = per_call_arena.reset(.free_all);
+
+    try std.testing.expect(response != null);
+    try std.testing.expectEqualStrings(response.?.contents.MarkupContent.value,
+        \\```swt
+        \\data Foo {
+        \\    "1",
+        \\    (Foo "2"),
+        \\}
+        \\```
+    );
+}
+
 pub const Handler = struct {
     allocator: std.mem.Allocator,
     session: Swity,
@@ -146,10 +207,10 @@ pub const Handler = struct {
 
         std.log.debug("opening {s}", .{notification.textDocument.uri});
 
-        const new_text = try self.allocator.dupe(u8, notification.textDocument.text);
-        errdefer self.allocator.free(new_text);
-
-        self.session.addFileWithSource(try pathFromUri(notification.textDocument.uri, arena), new_text);
+        self.session.addFileWithSource(
+            try pathFromUri(notification.textDocument.uri, arena),
+            notification.textDocument.text,
+        );
         try self.session.reparseEverything();
     }
 
@@ -363,6 +424,8 @@ pub const Handler = struct {
         std.log.warn("received unexpected response from client with id '{?}'!", .{response.id});
     }
 };
+
+// TODO: use https://github.com/zigtools/zls/blob/master/src/uri.zig
 
 fn uriFromPath(path: []const u8, arena: std.mem.Allocator) ![]const u8 {
     const uri: std.Uri = try .parseAfterScheme("file", path);

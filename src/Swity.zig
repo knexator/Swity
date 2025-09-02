@@ -402,9 +402,11 @@ fn ownedAndNormalizedPath(self: *Swity, untrusted_path: []const u8) []const u8 {
 }
 
 // TODO: setFileSource
-pub fn addFileWithSource(self: *Swity, untrusted_path: []const u8, text: []const u8) void {
+pub fn addFileWithSource(self: *Swity, untrusted_path: []const u8, unowned_text: []const u8) void {
     // TODO: clarify ownership
     const path = self.ownedAndNormalizedPath(untrusted_path);
+    // TODO: clarify ownership
+    const text = self.duplicated_source_arena.allocator().dupe(u8, unowned_text) catch OoM();
     // self.files_new.putNoClobber(path_owned, .fromText(self, path_owned, text)) catch OoM();
     if (self.files_new.contains(path)) {
         assert(std.mem.eql(u8, self.files_new.get(path).?.source, text));
