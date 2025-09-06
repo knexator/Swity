@@ -1,0 +1,44 @@
+data Foo {
+    "a",
+    "b",
+}
+
+fn constantFunction: Foo -> ListOfCases {
+    // TODO: not actually ("Literal" v), should be <toTree v> maybe
+    v -> ((("Variable" "x") "identity" ("Literal" v) "return") "nil");
+}
+
+fn myFunc: Foo -> Foo {
+    v -> (constantFunction "b"): v;
+}
+
+main myFunc: "a";
+
+data Tree {
+    ("Literal" Literal),
+    ("Variable" Literal), // TODO: a peano number?
+    ("Plex" ListOfTrees),
+    // ("Comptime" Tree Tree) // probably remove
+}
+
+data ListOfTrees {
+    "nil",
+    (Tree ListOfTrees),
+}
+
+data Case {
+    (Tree Literal Tree {
+        "return",
+        ListOfCases,
+    }),
+}
+
+data ListOfCases {
+    "nil",
+    ("Case" ListOfCases),
+}
+
+// TODO
+data Literal {
+    Foo,
+}

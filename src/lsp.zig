@@ -327,7 +327,7 @@ pub const Handler = struct {
                                 },
                             },
                         };
-                    } else if (handler.session.known_funcs.get(id)) |declaration| {
+                    } else if (handler.session.known_funcs.get(.{ .literal = id })) |declaration| {
                         const decl_source = (handler.session.files_new.get(declaration.position.span.uri) orelse return null).source;
                         return .{
                             .contents = .{
@@ -388,7 +388,7 @@ pub const Handler = struct {
 
                     const source_span = if (handler.session.known_types.get(id)) |declaration|
                         declaration.position.children[0].span
-                    else if (handler.session.known_funcs.get(id)) |declaration|
+                    else if (handler.session.known_funcs.get(.{ .literal = id })) |declaration|
                         declaration.position.children[0].span
                     else
                         null;

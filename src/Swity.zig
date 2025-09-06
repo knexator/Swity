@@ -11,9 +11,9 @@ else
     std.AutoHashMap(TypeId, TypeDeclaration);
 
 known_types: KnownTypes,
-known_funcs: if (FuncId == []const u8) std.StringHashMap(Func) else std.AutoHashMap(FuncId, Func),
+known_funcs: std.HashMap(Value, Func, Value.Context, std.hash_map.default_max_load_percentage),
 main_expression: ?struct {
-    func_id: FuncId,
+    func_id: Value,
     argument: Value,
 } = null,
 
@@ -121,7 +121,8 @@ pub fn parseEverything(swity: *Swity) !void {
                 },
                 .fn_definition => {
                     assert(declaration.children.len == 4);
-                    const id = declaration.children[0].asString(text);
+                    const id = declaration.children[0].asValue(text, swity.permanent_arena.allocator());
+                    assert(std.meta.activeTag(id) == .literal);
                     const type_in = declaration.children[1].asType(text, swity.permanent_arena.allocator());
                     const type_out = declaration.children[2].asType(text, swity.permanent_arena.allocator());
                     const cases = declaration.children[3].asCases(text, swity.permanent_arena.allocator());
@@ -155,7 +156,7 @@ pub fn parseEverything(swity: *Swity) !void {
                 .main_definition => {
                     assert(declaration.children.len == 2);
 
-                    const func_id = declaration.children[0].asString(text);
+                    const func_id = declaration.children[0].asValue(text, swity.permanent_arena.allocator());
                     const argument = declaration.children[1].asValue(text, swity.permanent_arena.allocator());
                     // TODO
                     // assert(swity.main_expression == null);
@@ -262,7 +263,7 @@ pub const CST = struct {
             switch (case_cst.children.len) {
                 4 => {
                     case.pattern = case_cst.children[0].asTree(source, mem);
-                    case.function_id = case_cst.children[1].asString(source);
+                    case.function_id = case_cst.children[1].asValue(source, mem);
                     case.template = case_cst.children[2].asTree(source, mem);
                     case.next = case_cst.children[3].asInnerFunc(source, mem);
                 },
@@ -280,7 +281,7 @@ pub const CST = struct {
                         case.next = case_cst.children[2].asInnerFunc(source, mem);
                     } else {
                         case.pattern = case_cst.children[0].asTree(source, mem);
-                        case.function_id = case_cst.children[1].asString(source);
+                        case.function_id = case_cst.children[1].asValue(source, mem);
                         case.template = case_cst.children[2].asTree(source, mem);
                         case.next = null;
                     }
@@ -338,7 +339,9 @@ pub const CST = struct {
                 }
                 return result;
             },
-            else => unreachable,
+            // TODO: REMOVE THIS HORRIBLE HACK
+            .identifier => return .{ .literal = self.asString(source) },
+            else => panic("unexpected tag {any}", .{self.tag}),
         };
     }
 
@@ -452,10 +455,37 @@ fn addReplText(self: *Swity, text: []const u8) void {
 pub fn executeMain(self: *Swity) !Value {
     try self.reparseEverything();
     assert(self.main_expression != null);
+    try self.precompileMetaFuncs();
     self.solveAllTypes();
     self.optimizeAllFuncs();
     // std.log.debug("solved all types", .{});
     return self.apply(self.main_expression.?.func_id, self.main_expression.?.argument);
+}
+
+fn precompileMetaFuncs(self: *Swity) !void {
+    var it = self.known_funcs.valueIterator();
+    while (it.next()) |func| {
+        if (self.findUnresolvedMetaFuncName(func.*)) |name| {
+            const compiled_func = panic("TODO: compile {any}", .{name});
+            try self.known_funcs.putNoClobber(name, compiled_func);
+            break;
+        }
+    }
+}
+
+fn findUnresolvedMetaFuncName(self: *Swity, func: Func) ?Value {
+    for (func.cases) |case| {
+        if (case.function_id) |v| {
+            if (std.meta.activeTag(v) == .plex and !self.known_funcs.contains(v)) {
+                return v;
+            }
+        }
+        if (case.next) |next| {
+            if (self.findUnresolvedMetaFuncName(next)) |v| {
+                return v;
+            }
+        }
+    } else return null;
 }
 
 fn optimizeAllFuncs(self: *Swity) void {
@@ -544,9 +574,9 @@ test "stackify variables" {
         \\ }
     );
 
-    session.stackifyVariables(session.known_funcs.getPtr("foo").?);
+    session.stackifyVariables(session.known_funcs.getPtr(.{ .literal = "foo" }).?);
 
-    const foo_func = session.known_funcs.get("foo").?;
+    const foo_func = session.known_funcs.get(.{ .literal = "foo" }).?;
 
     // TODO: optimization pass to not store unused variables
     // try std.testing.expectEqual(foo_func.stack_used_by_self_and_next, 4);
@@ -569,11 +599,29 @@ pub fn solveAllTypes(self: *Swity) void {
     }
 }
 
-fn getFunc(self: Swity, func_id: FuncId) Func {
+// fn getFunc(self: *Swity, func_id: Value) Func {
+//     if (self.known_funcs.get(func_id)) |f| {
+//         return f;
+//     } else {
+//         switch (func_id) {
+//             .literal => |name| std.log.err("Could not find func with id {s}", .{name}),
+//             .plex => |plex| {
+//                 assert(plex.len == 2);
+//                 const meta_name = plex[0];
+//                 const meta_arg = plex[1];
+//                 const cases = self.apply(meta_name, meta_arg);
+//                 panic("TODO: meta compilation, for now got cases {any}", .{cases});
+//             },
+//         }
+//         unreachable;
+//     }
+// }
+
+fn getFunc(self: Swity, func_id: Value) Func {
     if (self.known_funcs.get(func_id)) |f| {
         return f;
     } else {
-        std.log.err("Could not find func with id {s}", .{func_id});
+        std.log.err("Could not find func with id {any}", .{func_id});
         unreachable;
     }
 }
@@ -599,7 +647,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
 
             process.solveAllTypes();
 
-            const bar_func = process.known_funcs.get("Bar").?;
+            const bar_func = process.known_funcs.get(.{ .literal = "Bar" }).?;
             const bar_inner_func = bar_func.cases[0].next.?;
 
             try std.testing.expectEqualDeep(bar_func.type_in, Type{ .ref = "Foo" });
@@ -824,7 +872,7 @@ pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
     }
 }
 
-pub fn apply(self: *Swity, func_id: ?FuncId, original_value: Value) Value {
+pub fn apply(self: *Swity, func_id: ?Value, original_value: Value) Value {
     // TODO: move the result to the permanent arena & uncomment this
     // defer _ = self.per_execution_arena.reset(.retain_capacity);
     const TYPE_CHECK = false;
@@ -833,7 +881,7 @@ pub fn apply(self: *Swity, func_id: ?FuncId, original_value: Value) Value {
         cur_func: Func,
         cur_bindings: []Value,
 
-        pub fn init(swity: *Swity, id: FuncId) @This() {
+        pub fn init(swity: *Swity, id: Value) @This() {
             const f = swity.known_funcs.get(id).?;
             assert(f.stack_used_by_self_and_next != std.math.maxInt(usize));
             return .{
@@ -937,7 +985,7 @@ test "one plus one" {
     const two: Value = .{ .plex = @constCast(&[2]Value{ succ, one }) };
 
     session.optimizeAllFuncs();
-    const actual = session.apply("sum", .{ .plex = @constCast(&[2]Value{ one, one }) });
+    const actual = session.apply(.{ .literal = "sum" }, .{ .plex = @constCast(&[2]Value{ one, one }) });
     const expected = two;
 
     try std.testing.expectEqualDeep(expected, actual);
@@ -976,7 +1024,7 @@ test "three times two" {
     const six: Value = .{ .plex = @constCast(&[2]Value{ succ, five }) };
 
     session.optimizeAllFuncs();
-    const actual = session.apply("mul", .{ .plex = @constCast(&[2]Value{ three, two }) });
+    const actual = session.apply(.{ .literal = "mul" }, .{ .plex = @constCast(&[2]Value{ three, two }) });
     const expected = six;
 
     try std.testing.expectEqualDeep(expected, actual);
@@ -1058,7 +1106,7 @@ const Parser = struct {
         } else if (self.maybeConsume("fn")) {
             const span_start = self.cursor() - "fn".len;
             self.consumeWhitespace();
-            const id: CST = self.consumeIdentifier();
+            const id: CST = self.consumeRawSexprNew();
             self.trimLeft();
             self.consume(":");
             self.trimLeft();
@@ -1087,7 +1135,7 @@ const Parser = struct {
         } else if (self.maybeConsume("main")) {
             const span_start = self.cursor() - "main".len;
             self.consumeWhitespace();
-            const func_id: CST = self.consumeIdentifier();
+            const func_id: CST = self.consumeRawSexprNew();
             self.trimLeft();
             self.consume(":");
             self.trimLeft();
@@ -1504,7 +1552,7 @@ const Parser = struct {
                         }) },
                         .{ .variable = .{ .name = "b" } },
                     }) },
-                    .function_id = "mul",
+                    .function_id = .{ .literal = "mul" },
                     .template = .{ .plex = @constCast(&[_]Tree{
                         .{ .variable = .{ .name = "a" } },
                         .{ .variable = .{ .name = "b" } },
@@ -1512,7 +1560,7 @@ const Parser = struct {
                     .next = .{ .cases = @constCast(&[1]Func.Case{
                         .{
                             .pattern = .{ .variable = .{ .name = "x" } },
-                            .function_id = "sum",
+                            .function_id = .{ .literal = "sum" },
                             .template = .{ .plex = @constCast(&[_]Tree{
                                 .{ .variable = .{ .name = "x" } },
                                 .{ .variable = .{ .name = "b" } },
@@ -1524,19 +1572,45 @@ const Parser = struct {
             }),
         };
 
-        const actual = process.known_funcs.get("mul") orelse return error.TestUnexpectedResult;
+        const actual = process.known_funcs.get(.{ .literal = "mul" }) orelse return error.TestUnexpectedResult;
 
         try S.expectEqualFuncs(expected, actual);
     }
 };
 
 pub const TypeId = []const u8;
-pub const FuncId = []const u8;
 
 pub const Value = union(enum) {
     literal: []const u8,
     // TODO: make this const?
     plex: []Value,
+
+    pub fn equals(this: Value, other: Value) bool {
+        return switch (this) {
+            .literal => |this_literal| switch (other) {
+                .literal => |other_literal| std.mem.eql(u8, this_literal, other_literal),
+                else => false,
+            },
+            .plex => |this_ps| switch (other) {
+                .plex => |other_ps| {
+                    if (this_ps.len != other_ps.len) return false;
+                    for (this_ps, other_ps) |a, b| {
+                        if (!equals(a, b)) return false;
+                    } else return true;
+                },
+                else => false,
+            },
+        };
+    }
+
+    pub const Context = struct {
+        pub fn hash(_: @This(), s: Value) u32 {
+            return s.hash();
+        }
+        pub fn eql(_: @This(), a: Value, b: Value) bool {
+            return equals(a, b);
+        }
+    };
 
     pub fn isTheLiteral(self: Value, target: []const u8) bool {
         return switch (self) {
@@ -1564,6 +1638,17 @@ pub const Value = union(enum) {
                 try writer.writeAll(")");
             },
         }
+    }
+
+    pub fn hash(s: *const Value) u32 {
+        return switch (s.*) {
+            .literal => |a| std.array_hash_map.hashString(a),
+            .plex => |vs| {
+                var hasher = std.hash.Wyhash.init(0);
+                std.hash.autoHashStrat(&hasher, vs, .DeepRecursive);
+                return @truncate(hasher.final());
+            },
+        };
     }
 };
 
@@ -1650,7 +1735,7 @@ pub const Func = struct {
 
     pub const Case = struct {
         pattern: Tree,
-        function_id: ?FuncId,
+        function_id: ?Value,
         template: Tree,
         next: ?Func,
 

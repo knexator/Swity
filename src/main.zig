@@ -38,6 +38,8 @@ pub fn main() !void {
     }
 
     try bw.flush();
+
+    // std.time.sleep(std.time.ns_per_min);
 }
 
 comptime {
