@@ -35,10 +35,13 @@ data Case {
 
 data ListOfCases {
     "nil",
-    ("Case" ListOfCases),
+    (Case ListOfCases),
 }
 
-// TODO
+// TODO: should be a builtin
 data Literal {
     Foo,
+    "x",
+    "identity",
+    "Foo",
 }

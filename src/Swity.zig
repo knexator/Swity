@@ -466,9 +466,161 @@ fn precompileMetaFuncs(self: *Swity) !void {
     var it = self.known_funcs.valueIterator();
     while (it.next()) |func| {
         if (self.findUnresolvedMetaFuncName(func.*)) |name| {
-            const compiled_func = panic("TODO: compile {any}", .{name});
+            assert(std.meta.activeTag(name) == .plex);
+            assert(name.plex.len == 2);
+            const cases_value = self.naiveExecute(name.plex[0], name.plex[1]);
+            const compiled_func = self.funcFromCases(cases_value);
             try self.known_funcs.putNoClobber(name, compiled_func);
             break;
+        }
+    }
+}
+
+fn asListPlusSentinelOfValues(value: Value, mem: std.mem.Allocator) !struct { vs: []Value, sentinel: Value } {
+    var remaining = value;
+    var result: std.ArrayList(Value) = .init(mem);
+    while (std.meta.activeTag(remaining) == .plex) {
+        assert(remaining.plex.len == 2);
+        try result.append(remaining.plex[0]);
+        remaining = remaining.plex[1];
+    }
+    return .{ .vs = try result.toOwnedSlice(), .sentinel = remaining };
+}
+
+fn asListOfValues(value: Value, mem: std.mem.Allocator) ![]Value {
+    const res = (try asListPlusSentinelOfValues(value, mem));
+    assert(std.mem.eql(u8, res.sentinel.literal, "nil"));
+    return res.vs;
+}
+
+fn funcFromCases(self: *Swity, cases_value: Value) Func {
+    const S = struct {
+        fn treeFromValue(value: Value, mem: std.mem.Allocator) Tree {
+            assert(std.meta.activeTag(value) == .plex);
+            if (value.plex.len == 2) {
+                if (value.plex[0].equals(.{ .literal = "Variable" })) {
+                    assert(std.meta.activeTag(value.plex[1]) == .literal);
+                    return .{ .variable = .{ .name = value.plex[1].literal } };
+                } else if (value.plex[0].equals(.{ .literal = "Literal" })) {
+                    assert(std.meta.activeTag(value.plex[1]) == .literal);
+                    return .{ .literal = value.plex[1].literal };
+                }
+            }
+            _ = mem;
+            panic("TODO: treeFromValue {any}", .{value});
+        }
+
+        fn valueFromTree(tree: Tree, mem: std.mem.Allocator) Value {
+            switch (tree) {
+                .literal => |lit| return .{ .literal = lit },
+                .variable => panic("unexpected variable {s}", .{tree.variable.name}),
+                .plex => |ps| {
+                    const result = mem.alloc(Value, ps.len) catch OoM();
+                    for (result, ps) |*dst, p| {
+                        dst.* = valueFromTree(p, mem);
+                    }
+                    return .{ .plex = result };
+                },
+            }
+        }
+    };
+
+    const cases_values = asListOfValues(cases_value, self.per_execution_arena.allocator()) catch OoM();
+    const cases: []Func.Case = self.permanent_arena.allocator().alloc(Func.Case, cases_values.len) catch OoM();
+
+    for (cases, cases_values) |*dst, case_value| {
+        assert(case_value.plex.len == 4);
+        const pattern_value = case_value.plex[0];
+        const function_id_value = case_value.plex[1];
+        const template_value = case_value.plex[2];
+        const next_value = case_value.plex[3];
+
+        dst.* = .{
+            .pattern = S.treeFromValue(pattern_value, self.permanent_arena.allocator()),
+            .function_id = if (function_id_value.equals(.{ .literal = "identity" })) null else S.valueFromTree(
+                S.treeFromValue(
+                    function_id_value,
+                    self.per_execution_arena.allocator(),
+                ),
+                self.permanent_arena.allocator(),
+            ),
+            .template = S.treeFromValue(template_value, self.permanent_arena.allocator()),
+            .next = if (next_value.equals(.{ .literal = "return" })) null else self.funcFromCases(next_value),
+        };
+    }
+
+    return .{
+        .position = undefined,
+        .cases = cases,
+        .type_in = .meta_unresolved,
+        .type_out = .meta_unresolved,
+    };
+}
+
+fn naiveExecute(self: *Swity, func_name: Value, input_value: Value) Value {
+    const S = struct {
+        fn matchPattern(known_vars: *std.StringHashMap(Value), pattern: Tree, value: Value) bool {
+            switch (pattern) {
+                .literal => |lit| return switch (value) {
+                    .literal => |v| std.mem.eql(u8, lit, v),
+                    else => return false,
+                },
+                .variable => |v| {
+                    known_vars.putNoClobber(v.name, value) catch OoM();
+                    return true;
+                },
+                .plex => |ps| switch (value) {
+                    else => return false,
+                    .plex => |vals| {
+                        if (ps.len != vals.len) return false;
+                        for (ps, vals) |p, v| {
+                            if (!matchPattern(known_vars, p, v)) return false;
+                        } else return true;
+                    },
+                },
+            }
+        }
+
+        fn evaluateTemplate(mem: std.mem.Allocator, known_vars: std.StringHashMap(Value), template: Tree) Value {
+            switch (template) {
+                .literal => |lit| return .{ .literal = lit },
+                .variable => |v| return known_vars.get(v.name) orelse panic("unknown variable {s}", .{v.name}),
+                .plex => |ps| {
+                    const result = mem.alloc(Value, ps.len) catch OoM();
+                    for (result, ps) |*dst, p| {
+                        dst.* = evaluateTemplate(mem, known_vars, p);
+                    }
+                    return .{ .plex = result };
+                },
+            }
+        }
+    };
+
+    var func = self.known_funcs.get(func_name) orelse panic("TODO: nested compilation, needed for {any}", .{func_name});
+    var known_vars: std.StringHashMap(Value) = .init(self.per_execution_arena.allocator());
+    while (true) {
+        for (func.cases) |case| {
+            var maybe_vars: std.StringHashMap(Value) = .init(self.per_execution_arena.allocator());
+            if (S.matchPattern(&maybe_vars, case.pattern, input_value)) {
+                {
+                    var it = maybe_vars.iterator();
+                    while (it.next()) |kv| {
+                        known_vars.putNoClobber(kv.key_ptr.*, kv.value_ptr.*) catch OoM();
+                    }
+                    maybe_vars.deinit();
+                }
+
+                var arg = S.evaluateTemplate(self.per_execution_arena.allocator(), known_vars, case.template);
+                if (case.function_id) |f_id| {
+                    arg = self.naiveExecute(f_id, arg);
+                }
+
+                if (case.next) |next| {
+                    func = next;
+                } else {
+                    return arg;
+                }
+            }
         }
     }
 }
@@ -764,6 +916,10 @@ fn solveTypes(self: *Swity, func: *Func) void {
         }
 
         fn isSubtype(scratch: std.mem.Allocator, known_types: KnownTypes, specific: Type, general: Type) bool {
+            // TODO: remove these
+            if (general == .meta_unresolved) return true;
+            if (specific == .meta_unresolved) return true;
+
             var assumptions: @typeInfo(@typeInfo(@TypeOf(isSubtypeHelper)).@"fn".params[1].type.?).pointer.child = .init(scratch);
             defer assumptions.deinit();
             return isSubtypeHelper(known_types, &assumptions, specific, general);
@@ -789,8 +945,10 @@ fn solveTypes(self: *Swity, func: *Func) void {
         ), specific: Type, general: Type) bool {
             // std.log.debug("checking isSubtype, specific {any} of general {any}", .{ specific, general });
             switch (specific) {
+                .meta_unresolved => return true,
                 .unresolved => unreachable,
                 .literal => |l_specific| switch (general) {
+                    .meta_unresolved => return true,
                     .unresolved => unreachable,
                     .literal => |l_general| return std.mem.eql(u8, l_specific, l_general),
                     .plex => return false,
@@ -816,6 +974,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     if (!isSubtypeHelper(known_types, assumptions, o, general)) return false;
                 } else return true,
                 .plex => |specific_parts| switch (general) {
+                    .meta_unresolved => return true,
                     .unresolved => unreachable,
                     .literal => return false,
                     .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?.value),
@@ -832,6 +991,9 @@ fn solveTypes(self: *Swity, func: *Func) void {
             }
         }
     };
+
+    // TODO: remove this by computing the type of comptime functions
+    if (func.type_in == .meta_unresolved or func.type_out == .meta_unresolved) return;
 
     assert(func.type_in != .unresolved);
     assert(func.type_out != .unresolved);
@@ -853,6 +1015,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
 // TODO: non-recursive version
 pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
     switch (@"type") {
+        .meta_unresolved => return true,
         // TODO
         // .unresolved => unreachable,
         .unresolved => return true,
@@ -1659,6 +1822,9 @@ pub const Type = union(enum) {
     oneof: []const Type,
     plex: []const Type,
 
+    // TODO: remove this case
+    meta_unresolved,
+
     pub fn format(
         self: @This(),
         comptime fmt: []const u8,
@@ -1668,7 +1834,7 @@ pub const Type = union(enum) {
         assert(fmt.len == 0);
         assert(std.meta.eql(options, .{}));
         switch (self) {
-            .unresolved => try writer.writeAll("UNRESOLVED"),
+            .unresolved, .meta_unresolved => try writer.writeAll("UNRESOLVED"),
             .literal => |l| try writer.print("\"{s}\"", .{l}),
             .ref => |r| try writer.writeAll(r),
             .oneof => |os| {
