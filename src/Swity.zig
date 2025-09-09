@@ -234,7 +234,17 @@ pub const CST = struct {
 
     pub fn asType(self: CST, source: []const u8, mem: std.mem.Allocator) Type {
         switch (self.tag) {
-            .identifier => return .{ .ref = self.asString(source) },
+            .identifier => {
+                const str = self.asString(source);
+                if (str[0] == '@') {
+                    if (std.mem.eql(u8, str, "@AnyLiteral")) {
+                        return .any_literal;
+                    } else {
+                        panic("unknown builtin type {s}", .{str});
+                    }
+                }
+                return .{ .ref = str };
+            },
             .literal => return .{ .literal = self.asString(source) },
             .data_plex => {
                 const result: []Type = mem.alloc(Type, self.children.len) catch OoM();
@@ -947,7 +957,19 @@ fn solveTypes(self: *Swity, func: *Func) void {
             switch (specific) {
                 .meta_unresolved => return true,
                 .unresolved => unreachable,
+                .any_literal => return switch (general) {
+                    .any_literal => return true,
+                    .meta_unresolved => return true,
+                    .unresolved => unreachable,
+                    .literal => return false,
+                    .plex => return false,
+                    .ref => |r| return isSubtypeHelper(known_types, assumptions, specific, known_types.get(r).?.value),
+                    .oneof => |options| for (options) |o| {
+                        if (isSubtypeHelper(known_types, assumptions, specific, o)) return true;
+                    } else return false,
+                },
                 .literal => |l_specific| switch (general) {
+                    .any_literal => return true,
                     .meta_unresolved => return true,
                     .unresolved => unreachable,
                     .literal => |l_general| return std.mem.eql(u8, l_specific, l_general),
@@ -974,6 +996,7 @@ fn solveTypes(self: *Swity, func: *Func) void {
                     if (!isSubtypeHelper(known_types, assumptions, o, general)) return false;
                 } else return true,
                 .plex => |specific_parts| switch (general) {
+                    .any_literal => return false,
                     .meta_unresolved => return true,
                     .unresolved => unreachable,
                     .literal => return false,
@@ -1015,6 +1038,10 @@ fn solveTypes(self: *Swity, func: *Func) void {
 // TODO: non-recursive version
 pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
     switch (@"type") {
+        .any_literal => return switch (value) {
+            .literal => return true,
+            .plex => return false,
+        },
         .meta_unresolved => return true,
         // TODO
         // .unresolved => unreachable,
@@ -1822,6 +1849,8 @@ pub const Type = union(enum) {
     oneof: []const Type,
     plex: []const Type,
 
+    any_literal,
+
     // TODO: remove this case
     meta_unresolved,
 
@@ -1834,6 +1863,7 @@ pub const Type = union(enum) {
         assert(fmt.len == 0);
         assert(std.meta.eql(options, .{}));
         switch (self) {
+            .any_literal => try writer.writeAll("@AnyLiteral"),
             .unresolved, .meta_unresolved => try writer.writeAll("UNRESOLVED"),
             .literal => |l| try writer.print("\"{s}\"", .{l}),
             .ref => |r| try writer.writeAll(r),

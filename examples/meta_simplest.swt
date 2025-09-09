@@ -1,3 +1,5 @@
+include "../stdlib/meta.swt";
+
 data Foo {
     "a",
     "b",
@@ -13,35 +15,3 @@ fn myFunc: Foo -> Foo {
 }
 
 main myFunc: "a";
-
-data Tree {
-    ("Literal" Literal),
-    ("Variable" Literal), // TODO: a peano number?
-    ("Plex" ListOfTrees),
-    // ("Comptime" Tree Tree) // probably remove
-}
-
-data ListOfTrees {
-    "nil",
-    (Tree ListOfTrees),
-}
-
-data Case {
-    (Tree Literal Tree {
-        "return",
-        ListOfCases,
-    }),
-}
-
-data ListOfCases {
-    "nil",
-    (Case ListOfCases),
-}
-
-// TODO: should be a builtin
-data Literal {
-    Foo,
-    "x",
-    "identity",
-    "Foo",
-}
