@@ -11,7 +11,7 @@ data ListOfTrees {
 }
 
 data Case {
-    (Tree Literal Tree {
+    (Tree Tree Tree {
         "return",
         ListOfCases,
     }),

@@ -7,7 +7,7 @@ data Foo {
 
 fn constantFunction: Foo -> ListOfCases {
     // TODO: not actually ("Literal" v), should be <toTree v> maybe
-    v -> ((("Variable" "x") "identity" ("Literal" v) "return") "nil");
+    v -> ((("Variable" "x") ("Literal" "@identity") ("Literal" v) "return") "nil");
 }
 
 fn myFunc: Foo -> Foo {

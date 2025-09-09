@@ -10,10 +10,16 @@ const KnownTypes = if (TypeId == []const u8)
 else
     std.AutoHashMap(TypeId, TypeDeclaration);
 
+const FuncId = union(enum) {
+    identity,
+    usual: Value,
+    // TODO: separate meta funcs?
+};
+
 known_types: KnownTypes,
 known_funcs: std.HashMap(Value, Func, Value.Context, std.hash_map.default_max_load_percentage),
 main_expression: ?struct {
-    func_id: Value,
+    func_id: FuncId,
     argument: Value,
 } = null,
 
@@ -156,7 +162,7 @@ pub fn parseEverything(swity: *Swity) !void {
                 .main_definition => {
                     assert(declaration.children.len == 2);
 
-                    const func_id = declaration.children[0].asValue(text, swity.permanent_arena.allocator());
+                    const func_id = declaration.children[0].asFuncId(text, swity.permanent_arena.allocator());
                     const argument = declaration.children[1].asValue(text, swity.permanent_arena.allocator());
                     // TODO
                     // assert(swity.main_expression == null);
@@ -275,25 +281,25 @@ pub const CST = struct {
             switch (case_cst.children.len) {
                 4 => {
                     case.pattern = case_cst.children[0].asTree(source, mem);
-                    case.function_id = case_cst.children[1].asValue(source, mem);
+                    case.function_id = case_cst.children[1].asFuncId(source, mem);
                     case.template = case_cst.children[2].asTree(source, mem);
                     case.next = case_cst.children[3].asInnerFunc(source, mem);
                 },
                 2 => {
                     case.pattern = case_cst.children[0].asTree(source, mem);
-                    case.function_id = null;
+                    case.function_id = .identity;
                     case.template = case_cst.children[1].asTree(source, mem);
                     case.next = null;
                 },
                 3 => {
                     if (case_cst.children[2].tag == .fn_cases) {
                         case.pattern = case_cst.children[0].asTree(source, mem);
-                        case.function_id = null;
+                        case.function_id = .identity;
                         case.template = case_cst.children[1].asTree(source, mem);
                         case.next = case_cst.children[2].asInnerFunc(source, mem);
                     } else {
                         case.pattern = case_cst.children[0].asTree(source, mem);
-                        case.function_id = case_cst.children[1].asValue(source, mem);
+                        case.function_id = case_cst.children[1].asFuncId(source, mem);
                         case.template = case_cst.children[2].asTree(source, mem);
                         case.next = null;
                     }
@@ -355,6 +361,15 @@ pub const CST = struct {
             .identifier => return .{ .literal = self.asString(source) },
             else => panic("unexpected tag {any}", .{self.tag}),
         };
+    }
+
+    pub fn asFuncId(self: CST, source: []const u8, mem: std.mem.Allocator) FuncId {
+        const result = self.asValue(source, mem);
+        if (std.meta.activeTag(result) == .literal and result.literal[0] == '@') {
+            if (std.mem.eql(u8, result.literal, "@identity")) {
+                return .identity;
+            } else panic("unknown builtin func id {s}", .{result.literal});
+        } else return .{ .usual = result };
     }
 
     pub fn asInnerFunc(self: *const CST, source: []const u8, mem: std.mem.Allocator) Func {
@@ -480,7 +495,7 @@ fn precompileMetaFuncs(self: *Swity) !void {
         if (self.findUnresolvedMetaFuncName(func.*)) |name| {
             assert(std.meta.activeTag(name) == .plex);
             assert(name.plex.len == 2);
-            const cases_value = self.naiveExecute(name.plex[0], name.plex[1]);
+            const cases_value = self.naiveExecute(.{ .usual = name.plex[0] }, name.plex[1]);
             const compiled_func = self.funcFromCases(cases_value);
             try self.known_funcs.putNoClobber(name, compiled_func);
             break;
@@ -508,7 +523,10 @@ fn asListOfValues(value: Value, mem: std.mem.Allocator) ![]Value {
 fn funcFromCases(self: *Swity, cases_value: Value) Func {
     const S = struct {
         fn treeFromValue(value: Value, mem: std.mem.Allocator) Tree {
-            assert(std.meta.activeTag(value) == .plex);
+            if (std.meta.activeTag(value) != .plex) {
+                std.log.err("expected plex, got {any}", .{value});
+                unreachable;
+            }
             if (value.plex.len == 2) {
                 if (value.plex[0].equals(.{ .literal = "Variable" })) {
                     assert(std.meta.activeTag(value.plex[1]) == .literal);
@@ -522,14 +540,14 @@ fn funcFromCases(self: *Swity, cases_value: Value) Func {
             panic("TODO: treeFromValue {any}", .{value});
         }
 
-        fn valueFromTree(tree: Tree, mem: std.mem.Allocator) Value {
+        fn castTreeToValue(tree: Tree, mem: std.mem.Allocator) Value {
             switch (tree) {
                 .literal => |lit| return .{ .literal = lit },
                 .variable => panic("unexpected variable {s}", .{tree.variable.name}),
                 .plex => |ps| {
                     const result = mem.alloc(Value, ps.len) catch OoM();
                     for (result, ps) |*dst, p| {
-                        dst.* = valueFromTree(p, mem);
+                        dst.* = castTreeToValue(p, mem);
                     }
                     return .{ .plex = result };
                 },
@@ -547,15 +565,21 @@ fn funcFromCases(self: *Swity, cases_value: Value) Func {
         const template_value = case_value.plex[2];
         const next_value = case_value.plex[3];
 
+        const function_name = S.castTreeToValue(
+            S.treeFromValue(
+                function_id_value,
+                self.per_execution_arena.allocator(),
+            ),
+            self.permanent_arena.allocator(),
+        );
+
         dst.* = .{
             .pattern = S.treeFromValue(pattern_value, self.permanent_arena.allocator()),
-            .function_id = if (function_id_value.equals(.{ .literal = "identity" })) null else S.valueFromTree(
-                S.treeFromValue(
-                    function_id_value,
-                    self.per_execution_arena.allocator(),
-                ),
-                self.permanent_arena.allocator(),
-            ),
+            .function_id = if (std.meta.activeTag(function_name) == .literal and function_name.literal[0] == '@') blk: {
+                if (std.mem.eql(u8, function_name.literal, "@identity")) {
+                    break :blk .identity;
+                } else panic("unknown builtin func id {s}", .{function_name.literal});
+            } else .{ .usual = function_name },
             .template = S.treeFromValue(template_value, self.permanent_arena.allocator()),
             .next = if (next_value.equals(.{ .literal = "return" })) null else self.funcFromCases(next_value),
         };
@@ -569,7 +593,7 @@ fn funcFromCases(self: *Swity, cases_value: Value) Func {
     };
 }
 
-fn naiveExecute(self: *Swity, func_name: Value, input_value: Value) Value {
+fn naiveExecute(self: *Swity, func_id: FuncId, input_value: Value) Value {
     const S = struct {
         fn matchPattern(known_vars: *std.StringHashMap(Value), pattern: Tree, value: Value) bool {
             switch (pattern) {
@@ -608,6 +632,12 @@ fn naiveExecute(self: *Swity, func_name: Value, input_value: Value) Value {
         }
     };
 
+    const func_name = switch (func_id) {
+        .identity => return input_value,
+        .usual => |v| v,
+    };
+
+    var active_value = input_value;
     var func = self.known_funcs.get(func_name) orelse panic("TODO: nested compilation, needed for {any}", .{func_name});
     var known_vars: std.StringHashMap(Value) = .init(self.per_execution_arena.allocator());
     while (true) {
@@ -622,15 +652,13 @@ fn naiveExecute(self: *Swity, func_name: Value, input_value: Value) Value {
                     maybe_vars.deinit();
                 }
 
-                var arg = S.evaluateTemplate(self.per_execution_arena.allocator(), known_vars, case.template);
-                if (case.function_id) |f_id| {
-                    arg = self.naiveExecute(f_id, arg);
-                }
+                const raw_arg = S.evaluateTemplate(self.per_execution_arena.allocator(), known_vars, case.template);
+                active_value = self.naiveExecute(case.function_id, raw_arg);
 
                 if (case.next) |next| {
                     func = next;
                 } else {
-                    return arg;
+                    return active_value;
                 }
             }
         } else panic("no matching case found for func {any} with input {any}", .{ func_name, input_value });
@@ -639,10 +667,13 @@ fn naiveExecute(self: *Swity, func_name: Value, input_value: Value) Value {
 
 fn findUnresolvedMetaFuncName(self: *Swity, func: Func) ?Value {
     for (func.cases) |case| {
-        if (case.function_id) |v| {
-            if (std.meta.activeTag(v) == .plex and !self.known_funcs.contains(v)) {
-                return v;
-            }
+        switch (case.function_id) {
+            .identity => {},
+            .usual => |v| {
+                if (std.meta.activeTag(v) == .plex and !self.known_funcs.contains(v)) {
+                    return v;
+                }
+            },
         }
         if (case.next) |next| {
             if (self.findUnresolvedMetaFuncName(next)) |v| {
@@ -831,10 +862,10 @@ fn solveTypes(self: *Swity, func: *Func) void {
             // std.log.debug("template: {any}", .{case.template});
             const type_of_argument: Type = findTypeOfArgument(swity.permanent_arena.allocator(), known, case.template);
             // std.log.debug("type of arg: {any}", .{type_of_argument});
-            const type_of_evaluated_argument: Type = if (case.function_id) |func_id|
-                findTypeOfResult(swity.permanent_arena.allocator(), swity.getFunc(func_id), type_of_argument)
-            else
-                type_of_argument;
+            const type_of_evaluated_argument: Type = switch (case.function_id) {
+                .identity => type_of_argument,
+                .usual => |v| findTypeOfResult(swity.permanent_arena.allocator(), swity.getFunc(v), type_of_argument),
+            };
             // std.log.debug("type of evaluated arg: {any}", .{type_of_evaluated_argument});
             if (case.next) |*next| {
                 next.type_in = type_of_evaluated_argument;
@@ -1085,7 +1116,7 @@ pub fn validValueForType(self: Swity, @"type": Type, value: Value) bool {
     }
 }
 
-pub fn apply(self: *Swity, func_id: ?Value, original_value: Value) Value {
+pub fn apply(self: *Swity, func_id: FuncId, original_value: Value) Value {
     // TODO: move the result to the permanent arena & uncomment this
     // defer _ = self.per_execution_arena.reset(.retain_capacity);
     const TYPE_CHECK = false;
@@ -1095,7 +1126,7 @@ pub fn apply(self: *Swity, func_id: ?Value, original_value: Value) Value {
         cur_bindings: []Value,
 
         pub fn init(swity: *Swity, id: Value) @This() {
-            const f = swity.known_funcs.get(id).?;
+            const f = swity.known_funcs.get(id) orelse panic("unknown func {any}", .{id});
             assert(f.stack_used_by_self_and_next != std.math.maxInt(usize));
             return .{
                 .cur_func = f,
@@ -1103,8 +1134,8 @@ pub fn apply(self: *Swity, func_id: ?Value, original_value: Value) Value {
             };
         }
     }) = .init(self.per_execution_arena.allocator());
-    if (func_id == null) return active_value;
-    stack.append(.init(self, func_id.?)) catch OoM();
+    if (func_id == .identity) return active_value;
+    stack.append(.init(self, func_id.usual)) catch OoM();
     while (stack.pop()) |active_stack| {
         // std.log.debug("cur stack: cases {any}, active value {any}", .{ active_stack.cur_func, active_value });
         if (TYPE_CHECK) assert(self.validValueForType(active_stack.cur_func.type_in, active_value));
@@ -1121,11 +1152,12 @@ pub fn apply(self: *Swity, func_id: ?Value, original_value: Value) Value {
                     self.per_execution_arena.allocator().free(active_stack.cur_bindings);
                 }
 
-                if (case.function_id) |child_func_id| {
-                    stack.append(.init(self, child_func_id)) catch OoM();
+                switch (case.function_id) {
+                    .identity => {},
+                    .usual => |v| stack.append(.init(self, v)) catch OoM(),
                 }
 
-                if (case.next == null and case.function_id == null) {
+                if (case.next == null and std.meta.activeTag(case.function_id) != .usual) {
                     if (TYPE_CHECK) {
                         if (!self.validValueForType(active_stack.cur_func.type_out, active_value)) {
                             std.log.err("invalid value {any} for out type {any} while checking func cases {any}", .{ active_value, active_stack.cur_func.type_out, active_stack.cur_func.cases });
@@ -1198,7 +1230,7 @@ test "one plus one" {
     const two: Value = .{ .plex = @constCast(&[2]Value{ succ, one }) };
 
     session.optimizeAllFuncs();
-    const actual = session.apply(.{ .literal = "sum" }, .{ .plex = @constCast(&[2]Value{ one, one }) });
+    const actual = session.apply(.{ .usual = .{ .literal = "sum" } }, .{ .plex = @constCast(&[2]Value{ one, one }) });
     const expected = two;
 
     try std.testing.expectEqualDeep(expected, actual);
@@ -1237,7 +1269,7 @@ test "three times two" {
     const six: Value = .{ .plex = @constCast(&[2]Value{ succ, five }) };
 
     session.optimizeAllFuncs();
-    const actual = session.apply(.{ .literal = "mul" }, .{ .plex = @constCast(&[2]Value{ three, two }) });
+    const actual = session.apply(.{ .usual = .{ .literal = "mul" } }, .{ .plex = @constCast(&[2]Value{ three, two }) });
     const expected = six;
 
     try std.testing.expectEqualDeep(expected, actual);
@@ -1957,7 +1989,7 @@ pub const Func = struct {
 
     pub const Case = struct {
         pattern: Tree,
-        function_id: ?Value,
+        function_id: FuncId,
         template: Tree,
         next: ?Func,
 
@@ -1970,10 +2002,9 @@ pub const Func = struct {
         ) !void {
             std.debug.assert(std.mem.eql(u8, fmt, ""));
             std.debug.assert(std.meta.eql(options, .{}));
-            if (self.function_id) |func_id| {
-                try writer.print("{any} -> {s}: {any}", .{ self.pattern, func_id, self.template });
-            } else {
-                try writer.print("{any} -> {any}", .{ self.pattern, self.template });
+            switch (self.function_id) {
+                .identity => try writer.print("{any} -> {any}", .{ self.pattern, self.template }),
+                .usual => |v| try writer.print("{any} -> {any}: {any}", .{ self.pattern, v, self.template }),
             }
             if (self.next) |next| {
                 try writer.print(" {any}", .{next});
