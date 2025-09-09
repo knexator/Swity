@@ -61,6 +61,10 @@ pub fn build(b: *std.Build) void {
             \\"b"
             \\
             },
+            .{ .filename = "examples/meta.swt", .expected = 
+            \\("succ" "zero")
+            \\
+            },
         }) |example| {
             const run_cmd = b.addRunArtifact(exe);
             run_cmd.step.dependOn(b.getInstallStep());

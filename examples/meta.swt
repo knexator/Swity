@@ -1,0 +1,44 @@
+include "../stdlib/meta.swt";
+
+data Natural {
+    "zero",
+    ("succ" Natural),
+}
+
+fn sum: (Natural Natural) -> Natural {
+    ("zero" b) -> b;
+    (("succ" a) b) -> sum: (a ("succ" b));
+}
+
+fn sumPrecomputed: (Natural Natural) -> Natural {
+    x -> (precomputed (sum (
+        ("zero" "zero") (
+        ("zero" ("succ" "zero")) (
+        (("succ" "zero") "zero") "nil"
+    ))))): x {
+        ("found" y) -> y;
+        "not-found" -> sum: x;
+    }
+}
+
+data ListOfAny {
+    "nil",
+    (@Any ListOfAny),
+}
+
+fn precomputed: (Literal ListOfAny) -> ListOfCases {
+    (f "nil") -> ((("Variable" "_") ("Literal" "@identity") ("Literal" "not-found") "return") "nil");
+    (f (x rest)) -> precomputed: (f rest) {
+        // TODO:
+        // rest_done -> (apply f): x 
+        rest_done -> sum: x {
+            y -> @toTree: x {
+                x2 -> @toTree: ("found" y) {
+                    y2 -> ((x2 ("Literal" "@identity") y2 "return") rest_done);
+                }
+            }
+        }
+    }
+}
+
+main sumPrecomputed: ("zero" ("succ" "zero"));
