@@ -5,9 +5,10 @@ data Foo {
     "b",
 }
 
-fn constantFunction: Foo -> ListOfCases {
-    // TODO: not actually ("Literal" v), should be <toTree v> maybe
-    v -> ((("Variable" "x") ("Literal" "@identity") ("Literal" v) "return") "nil");
+fn constantFunction: @Any -> ListOfCases {
+    v -> @toTree: v {
+        v2 -> ((("Variable" "x") ("Literal" "@identity") v2 "return") "nil");
+    }
 }
 
 fn myFunc: Foo -> Foo {
